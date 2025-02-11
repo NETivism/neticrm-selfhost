@@ -1,0 +1,8 @@
+# Ignore hidden files
+.*
+
+# Ignore MariaDB data directory
+mariadb_data/
+
+# Ignore www directory
+www/
