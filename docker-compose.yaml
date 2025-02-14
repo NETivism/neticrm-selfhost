@@ -13,17 +13,21 @@ services:
     volumes:
       - ./mariadb_data:/var/lib/mysql
       - ./container/mysql/my.cnf:/etc/mysql/my.cnf
+      - ./container/mysql/initdb.d:/docker-entrypoint-initdb.d
     networks:
       - neticrm_network
 
   php-fpm:
-    image: neticrm:php-only-d10
+    image: ghcr.io/junsuwhy/neticrm-docker/neticrm-php:php-only-d10
     container_name: neticrm-php
     restart: always
+    environment:
+      MYSQL_USER: ${MYSQL_USER}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+      MYSQL_DATABASE: ${MYSQL_DATABASE}
     volumes:
       - ./www:/var/www/html
       - ./container/init-10.sh:/init.sh
-      - /mnt/neticrm-10:/mnt/neticrm-10
       - ./container/supervisord/supervisord.conf:/etc/supervisor/conf.d/supervisord.conf
     depends_on:
       - mariadb
