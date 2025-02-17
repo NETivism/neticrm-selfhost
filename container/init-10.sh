@@ -61,6 +61,3 @@ printf "langcode: en\nstatus: true\ndependencies:\n  module:\n    - image\n    -
 drush --yes config:import --source=/tmp/config --partial
 
 chown -R www-data /var/www/html/sites/default/files
-
-drush runserver 0.0.0.0:$PORT >& /dev/null & 
-until netstat -an 2>/dev/null | grep "${PORT}.*LISTEN"; do true; done
