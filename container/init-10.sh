@@ -42,12 +42,7 @@ if [ -f $DRUPAL_ROOT/sites/default/settings.php ]; then
   echo "\$config['system.performance']['js']['preprocess'] = FALSE;" >> $DRUPAL_ROOT/sites/default/settings.php
 fi
 
-echo "Install netiCRM ..."
-cd $DRUPAL_ROOT/modules/
-git clone https://github.com/NETivism/netiCRM.git civicrm && cd civicrm
-git submodule init && git submodule update
-cd $DRUPAL_ROOT/modules/civicrm/neticrm/ && git checkout 10.x-master
-cd $DRUPAL_ROOT/modules/civicrm/drupal/ && git checkout 10.x-master
+ln -s /mnt/neticrm-10/civicrm $DRUPAL_ROOT/modules/civicrm
 
 drush --yes pm:install civicrm
 drush --yes pm:install civicrm_allpay

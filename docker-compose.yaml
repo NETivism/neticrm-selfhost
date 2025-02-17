@@ -42,8 +42,7 @@ services:
       - "${PORT}:80"
     volumes:
       - ./www:/var/www/html
-      - /mnt/neticrm-10:/mnt/neticrm-10
-      - ./nginx/conf.d:/etc/nginx/conf.d
+      - ./container/nginx/conf.d:/etc/nginx/conf.d
     depends_on:
       - php-fpm
     networks:
