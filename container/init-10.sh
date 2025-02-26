@@ -6,11 +6,6 @@ while ! mysqladmin ping -h mariadb -u "$MYSQL_USER" -p"$MYSQL_PASSWORD" --silent
 done
 echo "Database is running and accepting connections."
 
-REPOSDIR=`pwd`
-if [ ! -f $REPOSDIR/civicrm-version.txt ]; then
-  REPOSDIR='/mnt/neticrm-10/civicrm'
-fi
-
 export DRUPAL=10
 export DRUPAL_ROOT=/var/www/html
 
@@ -20,6 +15,10 @@ fi
 
 if ! grep -q "export DRUPAL_ROOT=/var/www/html" /root/.bashrc; then
   echo "export DRUPAL_ROOT=/var/www/html" >> /root/.bashrc
+fi
+
+if ! grep -q "export DOMAIN" /root/.bashrc; then
+  echo "export DOMAIN=$DOMAIN" >> /root/.bashrc
 fi
 
 date +"@ %Y-%m-%d %H:%M:%S %z"
@@ -34,7 +33,8 @@ else
 fi
 
 if [ ! -d $DRUPAL_ROOT/modules/civicrm ]; then
-  ln -s /mnt/neticrm-10/civicrm $DRUPAL_ROOT/modules
+  mv /mnt/neticrm-10/civicrm $DRUPAL_ROOT/modules
+  rm -r /mnt/neticrm-10
   cd $DRUPAL_ROOT/modules/civicrm
   git checkout develop-php83
   cd $DRUPAL_ROOT
@@ -47,7 +47,7 @@ else
   echo "Install Drupal ..."
   date +"@ %Y-%m-%d %H:%M:%S %z"
   sleep 5s
-  drush -vvvv --yes site-install standard --account-name=admin --db-url=mysql://$MYSQL_USER:${MYSQL_PASSWORD}@mariadb/$MYSQL_DATABASE --account-pass=$MYSQL_PASSWORD --site-name=netiCRM
+  drush -vvvv --yes site-install standard --locale=${LANGUAGE:-en} --account-name=$ADMIN_LOGIN_USER --db-url=mysql://$MYSQL_USER:${MYSQL_PASSWORD}@mariadb/$MYSQL_DATABASE --account-pass=$ADMIN_LOGIN_PASSWORD --site-name=netiCRM
 
   if [ -f $DRUPAL_ROOT/sites/default/settings.php ]; then
     if ! grep -q "date_default_timezone_set" $DRUPAL_ROOT/sites/default/settings.php; then

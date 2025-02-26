@@ -2,7 +2,7 @@
 
 ## Prerequisites
 - Docker
-- Docker Compose
+- Docker compose
 
 ## Installation Steps
 
@@ -21,32 +21,40 @@
     ```sh
     nano .env
     ```
-    Make sure to update the `MYSQL_ROOT_PASSWORD`, `MYSQL_DATABASE`, `MYSQL_USER`, and `MYSQL_PASSWORD` with your own values.
+    Make sure to update the `MYSQL_ROOT_PASSWORD`, `MYSQL_DATABASE`, `MYSQL_USER`, and `MYSQL_PASSWORD` with your own values. Also, change `ADMIN_LOGIN_USER` and `ADMIN_LOGIN_PASSWORD` to prevent others from logging in as the administrator.
 
-4. **Start the Docker containers:**
+    4. **Start the Docker containers:**
     ```sh
-    docker-compose up -d
+    docker compose up -d
     ```
 
 5. **Access the application:**
     After a while of installation. Open your web browser and navigate to `http://localhost:8080` (or the port you configured in the `.env` file).
 
-6. **Follow the on-screen instructions** to complete the setup.
+6. **Login to the system:**
+    There are two ways to get login user and password:
+    - Use `ADMIN_LOGIN_USER` and `ADMIN_LOGIN_PASSWORD` in `.env` file to login.
+    - Generate a one-time login link using the following command:
+      ```sh
+      docker exec -it neticrm-php bash -c 'drush -l $DOMAIN uli'
+      ```
+
+7. **Follow the on-screen instructions** to complete the setup.
 
 ## Stopping the Containers
 To stop the running containers, use:
 ```sh
-docker-compose down
+docker compose down
 ```
 
 ## Additional Commands
 - **View logs:**
     ```sh
-    docker-compose logs -f
+    docker compose logs -f
     ```
 - **Restart services:**
     ```sh
-    docker-compose restart
+    docker compose restart
     ```
 
 For more detailed information, refer to the official documentation or contact support.
