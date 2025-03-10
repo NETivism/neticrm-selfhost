@@ -18,7 +18,7 @@ services:
       - neticrm_network
 
   php-fpm:
-    image: ghcr.io/junsuwhy/neticrm-docker/neticrm-php:php-only-d10
+    image: ghcr.io/netivism/neticrm-docker/neticrm-php:php-only-d10
     container_name: neticrm-php
     restart: always
     working_dir: /var/www/html
