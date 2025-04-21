@@ -1,4 +1,4 @@
-# NetiCRM Self-Host Installation Guide
+# netiCRM Self-Host Installation Guide
 
 ## Prerequisites
 - Docker
@@ -8,7 +8,7 @@
 
 1. **Clone the repository:**
     ```sh
-    git clone https://github.com/junsuwhy/neticrm-selfhost
+    git clone https://github.com/netivism/neticrm-selfhost
     cd neticrm-selfhost
     ```
 

@@ -6,23 +6,34 @@ while ! mysqladmin ping -h mariadb -u "$MYSQL_USER" -p"$MYSQL_PASSWORD" --silent
 done
 echo "Database is running and accepting connections."
 
+get_latest_neticrm_version() {
+  # Use GitHub API to get the latest release tag
+  latest_version=$(curl -s https://api.github.com/repos/NETivism/netiCRM/releases/latest | grep "tag_name" | cut -d '"' -f 4)
+
+  # If API call fails, try to parse from the releases page
+  if [ -z "$latest_version" ]; then
+    latest_version=$(curl -s https://github.com/NETivism/netiCRM/releases | grep -o 'NETivism/netiCRM/releases/tag/[0-9]*\.[0-9]*\.[0-9]*' | head -1 | cut -d '/' -f 6)
+  fi
+
+  # Remove 'v' prefix if present
+  latest_version=${latest_version#v}
+
+  echo "$latest_version"
+}
+
 export DRUPAL=10
 export DRUPAL_ROOT=/var/www/html
-
 if ! grep -q "export TERM=xterm" /root/.bashrc; then
   echo "export TERM=xterm" >> /root/.bashrc
 fi
-
 if ! grep -q "export DRUPAL_ROOT=/var/www/html" /root/.bashrc; then
   echo "export DRUPAL_ROOT=/var/www/html" >> /root/.bashrc
 fi
-
 if ! grep -q "export DOMAIN" /root/.bashrc; then
   echo "export DOMAIN=$DOMAIN" >> /root/.bashrc
 fi
 
-date +"@ %Y-%m-%d %H:%M:%S %z"
-echo "CI for Drupal-$DRUPAL + netiCRM"
+
 
 if mysql -h mariadb -u"$MYSQL_USER" -p"$MYSQL_PASSWORD" -e "SHOW DATABASES;" > /dev/null 2>&1; then
   echo "✅ Connection successful!"
@@ -32,13 +43,37 @@ else
   mysql -h mariadb -u"$MYSQL_USER" -p"$MYSQL_PASSWORD" -e "SHOW DATABASES;" 2>&1
 fi
 
+
+date +"@ %Y-%m-%d %H:%M:%S %z"
+echo "Downloading Drupal-$DRUPAL + netiCRM"
 if [ ! -d $DRUPAL_ROOT/modules/civicrm ]; then
-  mv /mnt/neticrm-10/civicrm $DRUPAL_ROOT/modules
-  rm -r /mnt/neticrm-10
-  cd $DRUPAL_ROOT/modules/civicrm
-  git checkout develop-php83
-  cd $DRUPAL_ROOT
+  NETICRM_VERSION=$(get_latest_neticrm_version)
+  if [ -z "$NETICRM_VERSION" ]; then
+    echo "Error: Could not determine the latest version."
+    exit 1
+  fi
+  echo "Latest netiCRM version: $NETICRM_VERSION"
+  DOWNLOAD_URL="https://github.com/NETivism/netiCRM/releases/download/$NETICRM_VERSION/neticrm-$NETICRM_VERSION.tar.gz"
+  DOWNLOAD_PATH="/tmp/neticrm-$NETICRM_VERSION.tar.gz"
+  echo "Downloading netiCRM from: $DOWNLOAD_URL"
+  curl -L -o "$DOWNLOAD_PATH" "$DOWNLOAD_URL"
+
+  # Check if download was successful
+  if [ ! -f "$DOWNLOAD_PATH" ]; then
+    echo "Error: Download failed."
+    exit 1
+  fi
+  mkdir -p "$DRUPAL_ROOT/modules/civicrm"
+  tar -xzf "$DOWNLOAD_PATH" -C "$DRUPAL_ROOT/modules/civicrm" --strip-components=1
+
+  # Clean up
+  echo "Cleaning up..."
+  rm "$DOWNLOAD_PATH"
+  echo "netiCRM $VERSION has been successfully downloaded to $DRUPAL_ROOT/modules/civicrm"
 fi
+
+date +"@ %Y-%m-%d %H:%M:%S %z"
+echo "Installing Drupal-$DRUPAL + netiCRM"
 
 if [ -f $DRUPAL_ROOT/sites/default/civicrm.settings.php ]; then
   echo "civicrm.settings.php is existed, do not install Drupal and CiviCRM."
@@ -64,6 +99,9 @@ else
   drush --yes pm:install civicrm_spgateway
   drush --yes pm:install neticrm_drush
   drush --yes pm:install civicrm_demo
+  drush --yes pm:install neticrm_update
+#  composer require 'drupal/admin_toolbar:^3.5'
+#  drush --yes pm:install neticrm_dmenu
 
   # add permission for unit testing
   drush role-add-perm anonymous 'profile create,register for events,access CiviMail subscribe/unsubscribe pages,access all custom data,view event info,view public CiviMail content,make online contributions'
