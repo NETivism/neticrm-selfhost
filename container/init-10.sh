@@ -99,9 +99,10 @@ else
   drush --yes pm:install civicrm_spgateway
   drush --yes pm:install neticrm_drush
   drush --yes pm:install civicrm_demo
+  drush --yes pm:install civicrmtheme
   drush --yes pm:install neticrm_update
-#  composer require 'drupal/admin_toolbar:^3.5'
-#  drush --yes pm:install neticrm_dmenu
+  composer require 'drupal/admin_toolbar:^3.5'
+  drush --yes pm:install neticrm_dmenu
 
   # add permission for unit testing
   drush role-add-perm anonymous 'profile create,register for events,access CiviMail subscribe/unsubscribe pages,access all custom data,view event info,view public CiviMail content,make online contributions'
@@ -111,6 +112,7 @@ else
   mkdir /tmp/config
   printf "langcode: en\nstatus: true\ndependencies:\n  module:\n    - user\n  theme:\n    - olivero\nid: userlogin\ntheme: olivero\nregion: sidebar\nweight: 0\nprovider: null\nplugin: user_login_block\nsettings:\n  id: user_login_block\n  label: 'User login'\n  label_display: visible\n  provider: user\nvisibility: {  }" > /tmp/config/block.block.userlogin.yml
   printf "langcode: en\nstatus: true\ndependencies:\n  module:\n    - image\n    - user\nid: user.user.default\ntargetEntityType: user\nbundle: user\nmode: default\ncontent:\n  member_for:\n    settings: {  }\n    third_party_settings: {  }\n    weight: 1\n    region: content\n  user_picture:\n    type: image\n    label: hidden\n    settings:\n      image_link: content\n      image_style: thumbnail\n      image_loading:\n        attribute: lazy\n    third_party_settings: {  }\n    weight: 0\n    region: content\n  civicrm_dashboard:\n    settings: {  }\n    third_party_settings: {  }\n    weight: 3\n    region: content\n  civicrm_profiles:\n    settings: {  }\n    third_party_settings: {  }\n    weight: 4\n    region: content\n  civicrm_record:\n    settings: {  }\n    third_party_settings: {  }\n    weight: 2\n    region: content\nhidden:\n\n" > /tmp/config/core.entity_view_display.user.user.default.yml
+  printf "admin_theme: claro\npublic_theme: ''" > /tmp/config/civicrmtheme.settings.yml
   drush --yes config:import --source=/tmp/config --partial
 
   chown -R www-data /var/www/html/sites/default/files
