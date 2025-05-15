@@ -76,12 +76,18 @@ date +"@ %Y-%m-%d %H:%M:%S %z"
 echo "Installing Drupal-$DRUPAL + netiCRM"
 
 if [ -f $DRUPAL_ROOT/sites/default/civicrm.settings.php ]; then
-  echo "civicrm.settings.php is existed, do not install Drupal and CiviCRM."
+  echo "civicrm.settings.php is existed, do not install Drupal and netiCRM."
 else
   cd $DRUPAL_ROOT
   echo "Install Drupal ..."
   date +"@ %Y-%m-%d %H:%M:%S %z"
-  sleep 5s
+  sleep 1s
+  if [ -z "$ADMIN_LOGIN_USER "];then
+    ADMIN_LOGIN_USER=neticrm_admin
+  fi
+  if [ -z "$ADMIN_LOGIN_PASSWORD"];then
+    ADMIN_LOGIN_PASSWORD=$(openssl rand -base64 15)
+  fi
   drush -vvvv --yes site-install standard --locale=${LANGUAGE:-en} --account-name=$ADMIN_LOGIN_USER --db-url=mysql://$MYSQL_USER:${MYSQL_PASSWORD}@mariadb/$MYSQL_DATABASE --account-pass=$ADMIN_LOGIN_PASSWORD --site-name=netiCRM
 
   if [ -f $DRUPAL_ROOT/sites/default/settings.php ]; then
@@ -94,7 +100,13 @@ else
     fi
   fi
 
+  sleep 3s
+  drush --yes cr
+  sleep 3s
+
   drush --yes pm:install civicrm
+  drush neticrm-config-set inheritLocale 1
+  drush --yes cr
   drush --yes pm:install civicrm_allpay
   drush --yes pm:install civicrm_spgateway
   drush --yes pm:install neticrm_drush
@@ -116,4 +128,11 @@ else
   drush --yes config:import --source=/tmp/config --partial
 
   chown -R www-data /var/www/html/sites/default/files
+
+  echo "netiCRM Installation Completed" >&2
+  echo "Trying to restart php-fpm" >&2
+  echo "supervisorctl restart php-fpm" >&2
+  echo "Done!" >&2
+  echo ""
+  echo "You can now login using $ADMIN_LOGIN_USER with password: $ADMIN_LOGIN_PASSWORD"
 fi
