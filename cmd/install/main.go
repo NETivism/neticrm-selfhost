@@ -136,13 +136,33 @@ func copyFile(src, dst string) {
 }
 
 func updateEnv(key, val string) {
-	if val == "" {
+	inputBytes, err := os.ReadFile(targetFile)
+	if err != nil && !os.IsNotExist(err) {
+		fmt.Fprintf(os.Stderr, "讀取檔案 %s 錯誤: %v\n", targetFile, err)
 		return
 	}
-	re := regexp.MustCompile(`^` + key + `=.*`)
-	data, _ := os.ReadFile(targetFile)
-	out := re.ReplaceAll(data, []byte(fmt.Sprintf("%s=%s", key, val)))
-	_ = os.WriteFile(targetFile, out, 0644)
+
+	content := string(inputBytes)
+	regex := regexp.MustCompile(`(?m)^` + regexp.QuoteMeta(key) + `=.*`)
+
+	var newContent string
+	if regex.MatchString(content) {
+		newContent = regex.ReplaceAllString(content, fmt.Sprintf("%s=%s", key, val))
+	} else {
+		if content != "" && !strings.HasSuffix(content, "\n") {
+			content += "\n"
+		}
+		newContent = content + fmt.Sprintf("%s=%s\n", key, val)
+	}
+
+	if newContent != "" {
+		newContent = strings.TrimRight(newContent, "\n") + "\n"
+	}
+
+	err = os.WriteFile(targetFile, []byte(newContent), 0644)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "寫入檔案 %s 錯誤: %v\n", targetFile, err)
+	}
 }
 
 // --------- 亂數工具 ---------
