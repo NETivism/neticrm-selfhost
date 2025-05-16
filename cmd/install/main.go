@@ -85,31 +85,43 @@ func askDomainAndPort() (string, string) {
 }
 
 func askMySQL() map[string]string {
+	conf := map[string]string{} // 初始化 map
+
 	fmt.Print("3. 是否要修改 MySQL 參數？(y/N) ")
 	choice := strings.ToLower(readLine())
-	if !strings.HasPrefix(choice, "y") {
-		return nil
-	}
-	conf := map[string]string{}
-	fmt.Print("3-1. MYSQL_ROOT_PASSWORD (留空自動產生): ")
-	if v := readLine(); v != "" {
-		conf["root"] = v
-	} else {
+
+	if !strings.HasPrefix(choice, "y") { // 使用者選擇 N 或按 Enter
 		conf["root"] = randomPass(13)
-	}
-	fmt.Print("3-2. MYSQL_DATABASE (留空保留範例): ")
-	conf["db"] = readLine()
-
-	fmt.Print("3-3. MYSQL_USER (留空保留範例): ")
-	conf["user"] = readLine()
-
-	fmt.Print("3-4. MYSQL_PASSWORD (留空自動產生): ")
-	if v := readLine(); v != "" {
-		conf["pass"] = v
-	} else {
+		conf["db"] = ""   // 標記為保留範例值
+		conf["user"] = "" // 標記為保留範例值
 		conf["pass"] = randomPass(13)
+		fmt.Println("   → MYSQL_ROOT_PASSWORD 自動產生:", conf["root"])
+		// MYSQL_DATABASE 和 MYSQL_USER 將使用 example.env 的值
+		fmt.Println("   → MYSQL_PASSWORD 自動產生:", conf["pass"])
+	} else { // 使用者選擇 Y
+		fmt.Print("3-1. MYSQL_ROOT_PASSWORD (留空自動產生): ")
+		if v := readLine(); v != "" {
+			conf["root"] = v
+		} else {
+			conf["root"] = randomPass(13)
+			fmt.Println("   → 自動產生:", conf["root"])
+		}
+
+		fmt.Print("3-2. MYSQL_DATABASE (留空保留範例): ")
+		conf["db"] = readLine() // 若為空，main 函式會跳過 updateEnv
+
+		fmt.Print("3-3. MYSQL_USER (留空保留範例): ")
+		conf["user"] = readLine() // 若為空，main 函式會跳過 updateEnv
+
+		fmt.Print("3-4. MYSQL_PASSWORD (留空自動產生): ")
+		if v := readLine(); v != "" {
+			conf["pass"] = v
+		} else {
+			conf["pass"] = randomPass(13)
+			fmt.Println("   → 自動產生:", conf["pass"])
+		}
 	}
-	return conf
+	return conf // 現在總是返回一個 map
 }
 
 func askPassword() string {
