@@ -41,6 +41,36 @@
 
 7. **Follow the on-screen instructions** to complete the setup.
 
+## SSL Setup with Caddy
+
+For production environments, it's recommended to use SSL. This repository includes a `docker-compose-ssl.yaml` configuration that uses Caddy as a reverse proxy to handle SSL automatically.
+
+1. **Configure your Caddyfile:**
+    ```sh
+    # Edit the Caddyfile with your domain and email
+    nano Caddyfile
+    ```
+
+    Example Caddyfile content:
+    ```
+    {
+        email your-email@domain.com
+    }
+    your.domain.name {
+        reverse_proxy neticrm-nginx:80
+    }
+    ```
+
+    Replace `your-email@domain.com` with your email address and `your.domain.name` with your actual domain.
+
+2. **Start the SSL-enabled stack:**
+    ```sh
+    docker compose -f docker-compose-ssl.yaml up -d
+    ```
+
+3. **Access your site:**
+    Your site should now be accessible at `https://your.domain.name` with a valid SSL certificate automatically obtained by Caddy.
+
 ## Stopping the Containers
 To stop the running containers, use:
 ```sh

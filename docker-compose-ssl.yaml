@@ -1,0 +1,70 @@
+version: '3.8'
+
+services:
+  caddy:
+    image: caddy:latest
+    container_name: neticrm-caddy
+    restart: always
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile
+      - ./caddy_data:/data
+      - ./caddy_config:/config
+    networks:
+      - neticrm_network
+
+  mariadb:
+    image: mariadb:lts
+    container_name: neticrm-mariadb
+    restart: always
+    environment:
+      MARIADB_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MARIADB_DATABASE: ${MYSQL_DATABASE}
+      MARIADB_USER: ${MYSQL_USER}
+      MARIADB_PASSWORD: ${MYSQL_PASSWORD}
+    volumes:
+      - ./mariadb_data:/var/lib/mysql
+      - ./container/mysql/my.cnf:/etc/mysql/my.cnf
+      - ./container/mysql/initdb.d:/docker-entrypoint-initdb.d
+    networks:
+      - neticrm_network
+
+  php-fpm:
+    image: ghcr.io/netivism/neticrm-docker/neticrm-php:php-only-d10
+    container_name: neticrm-php
+    restart: always
+    working_dir: /var/www/html
+    environment:
+      MYSQL_USER: ${MYSQL_USER}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+      MYSQL_DATABASE: ${MYSQL_DATABASE}
+      DOMAIN: ${DOMAIN}
+      ADMIN_LOGIN_USER: ${ADMIN_LOGIN_USER}
+      ADMIN_LOGIN_PASSWORD: ${ADMIN_LOGIN_PASSWORD}
+      LANGUAGE: ${LANGUAGE}
+    volumes:
+      - ./www:/var/www/html
+      - ./container/init-10.sh:/init.sh
+      - ./container/supervisord/supervisord.conf:/etc/supervisor/conf.d/supervisord.conf
+    depends_on:
+      - mariadb
+    networks:
+      - neticrm_network
+
+  nginx:
+    image: nginx:stable
+    container_name: neticrm-nginx
+    restart: always
+    volumes:
+      - ./www:/var/www/html:ro
+      - ./container/nginx/conf.d:/etc/nginx/conf.d
+    depends_on:
+      - php-fpm
+    networks:
+      - neticrm_network
+
+networks:
+  neticrm_network:
+    driver: bridge
