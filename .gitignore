@@ -7,3 +7,8 @@ mariadb_data/
 # Ignore www directory
 www/
 sites/
+
+# Ignore Caddy data directory
+caddy_data/
+caddy_config/
+Caddyfile
