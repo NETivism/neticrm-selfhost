@@ -26,98 +26,68 @@ func main() {
 
 	// 1. Check if docker compose is available
 	haveDocker := checkDockerCompose()
-	if !haveDocker {
-		fmt.Println("\nWarning: docker compose command not found. Only .env file will be updated, services will not be started automatically.\n")
-		fmt.Print("Continue? [Y/n] ")
-		choice := strings.ToLower(readLine())
-		if choice == "n" {
-			fmt.Println("Installation cancelled.")
-			return
-		}
-	}
 
-	// 2. Ask for language preference first
 	lang := chooseLanguage()
 
-	// 3. Ask if SSL should be configured
-	composeFile := defaultComposeFile
-	domainName := ""
-	useSSL := false
-
-	fmt.Print("Do you have a domain and want to set up SSL automatically? [y/N] ")
-	choice := strings.ToLower(readLine())
-	if strings.HasPrefix(choice, "y") {
-		useSSL = true
-		composeFile = sslComposeFile
-
-		// Get domain name and email
-		fmt.Print("Please enter your domain name (e.g., example.com): ")
-		domainName = readLine()
-
-		// Update Caddyfile
-		updateCaddyfile("your.domain.name", domainName)
-
-		fmt.Print("Please enter your email (for Let's Encrypt SSL certificate): ")
-		email := readLine()
-		updateCaddyfile("your-email@domain.com", email)
-	}
-
-	// 4. Proceed with the rest of the installation flow
-	var domain string
-	var port string
-
-	// If a domain name was already provided during SSL setup, don't ask again
-	if useSSL && domainName != "" {
-		// Domain name already provided, use it directly
-		domain = domainName
-		port = "443" // SSL defaults to port 443
+	if lang == "zh-hant" {
+		fmt.Println("\n若您已有域名（Domain），請先將域名以A紀錄設到本主機 IP ，本安裝程式可自動幫您設定 SSL 並綁定網域")
+		fmt.Println("或依照您所選的設定綁定特定埠（Port）")
 	} else {
-		// Otherwise, ask for domain and port
-		domain, port = askDomainAndPort()
+		fmt.Println("\nIf you already have a domain name, please point it to this host's IP address.")
+		fmt.Println("This installer can automatically set up SSL and bind the domain for you,")
+		fmt.Println("or bind to a specific port according to your chosen settings.")
+	}
+	domain, email, useSSL, port := askDomainAndSSL(lang)
+
+	// Update .env file with domain and port if not using SSL
+	if !useSSL {
+		if domain != "" {
+			updateEnv("DOMAIN", domain)
+			updateEnv("PORT", "") // Clear port if domain is set
+		} else {
+			updateEnv("DOMAIN", "localhost") // Default domain if not set
+			updateEnv("PORT", port)
+		}
+	} else {
+		// For SSL, domain is handled by Caddyfile, clear PORT if it was set by default
+		updateEnv("PORT", "")
 	}
 
-	mysqlConf := askMySQL()
-	adminUser := askLine("4. ADMIN_LOGIN_USER (leave blank for example value): ")
+	// Update Caddyfile if SSL is used
+	if useSSL {
+		updateCaddyfile("your-domain.com", domain)
+		updateCaddyfile("your-email@example.com", email)
+	}
 
-	// 5. Modify ADMIN_LOGIN_PASSWORD handling
-	adminPass := readPassword("5. ADMIN_LOGIN_PASSWORD (leave blank and the installer will provide a random password): ")
+	mysqlConf := askMySQL(lang)
+	for key, value := range mysqlConf {
+		updateEnv(key, value)
+	}
 
-	// Update environment variables, only if the value is not empty
+	adminUser, adminPass := askAdminCredentials(lang)
+	updateEnv("ADMIN_LOGIN_USER", adminUser)
+	updateEnv("ADMIN_LOGIN_PASSWORD", adminPass)
 	updateEnv("LANGUAGE", lang)
-	updateEnv("DOMAIN", domain)
-	updateEnv("HTTP_PORT", port)
 
-	if mysqlConf != nil {
-		updateEnv("MYSQL_ROOT_PASSWORD", mysqlConf["root"])
-		if mysqlConf["db"] != "" {
-			updateEnv("MYSQL_DATABASE", mysqlConf["db"])
-		}
-		if mysqlConf["user"] != "" {
-			updateEnv("MYSQL_USER", mysqlConf["user"])
-		}
-		updateEnv("MYSQL_PASSWORD", mysqlConf["pass"])
+	composeFile := "docker-compose.yaml"
+	if useSSL {
+		composeFile = "docker-compose-ssl.yaml"
 	}
 
-	if adminUser != "" {
-		updateEnv("ADMIN_LOGIN_USER", adminUser)
-	}
-
-	// Only update if the admin password is not empty
-	if adminPass != "" {
-		updateEnv("ADMIN_LOGIN_PASSWORD", adminPass)
-	}
-	// If admin password is empty, keep the empty value in .env; the installer will auto-provide a random password later
-
-	fmt.Println("✅ .env file created successfully.")
-
-	// If docker compose is available, start it
-	if haveDocker {
-		fmt.Printf("Starting docker compose -f %s up -d ...\n", composeFile)
-		cmd := exec.Command("docker", "compose", "-f", composeFile, "up", "-d")
-		cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
-		_ = cmd.Run()
+	if lang == "zh-hant" {
+		fmt.Printf("✅ .env 建立完成，開始 docker compose -f %s up -d ...\n", composeFile)
 	} else {
-		fmt.Println("Please manually run docker compose to start the services.")
+		fmt.Println("✅ .env file created successfully.")
+		fmt.Printf("Starting docker compose -f %s up -d ...\n", composeFile)
+	}
+
+	// Only run docker compose if it's available
+	if haveDocker {
+		dockerComposeUp(composeFile)
+	} else {
+		// This part also needs i18n if desired, but not specified in this request
+		fmt.Println("Docker Compose is not available. Please install it and run manually:")
+		fmt.Printf("docker compose -f %s up -d\n", composeFile)
 	}
 }
 
@@ -125,7 +95,7 @@ func main() {
 func chooseLanguage() string {
 	fmt.Println("1. What's your language?")
 	fmt.Println(" 1) en")
-	fmt.Println(" 2) zh-hant")
+	fmt.Println(" 2) 台灣繁體中文")
 	for {
 		fmt.Print("Please enter 1 or 2: ")
 		choice := readLine()
@@ -137,71 +107,165 @@ func chooseLanguage() string {
 	}
 }
 
-func askDomainAndPort() (string, string) {
-	fmt.Print("2. Website domain (optional): ")
-	domain := readLine()
-	if domain == "" {
-		fmt.Print("2-1. Please enter Port (default 8080): ")
-		port := readLine()
-		if port == "" {
-			port = "8080"
-		}
-		return "", port
+func askDomainAndSSL(lang string) (string, string, bool, string) {
+	var domain, email, port string
+	var useSSL bool
+
+	// Ask about SSL first
+	var sslPrompt string
+	if lang == "zh-hant" {
+		sslPrompt = "您是否有網域並希望自動設定 SSL？ [y/N] "
+	} else {
+		sslPrompt = "Do you have a domain and want to set up SSL automatically? [y/N] "
 	}
-	return domain, randomPort()
+	fmt.Print(sslPrompt)
+	choice := strings.ToLower(readLine())
+	useSSL = strings.HasPrefix(choice, "y")
+
+	if useSSL {
+		// SSL Path
+		var domainPrompt, emailPrompt string
+		if lang == "zh-hant" {
+			domainPrompt = "請輸入您的域名 (例如 example.com): "
+			emailPrompt = "請輸入您的電子郵件 (用於 Let's Encrypt SSL 證書): "
+		} else {
+			domainPrompt = "Please enter your domain name (e.g., example.com): "
+			emailPrompt = "Please enter your email (for Let's Encrypt SSL certificate): "
+		}
+		fmt.Print(domainPrompt)
+		domain = readLine()
+		if domain == "" {
+			// Domain is mandatory for SSL
+			if lang == "zh-hant" {
+				fmt.Println("域名 SSL 模式下不可為空")
+			} else {
+				fmt.Println("Domain cannot be empty for SSL")
+			}
+			os.Exit(1)
+		}
+		fmt.Print(emailPrompt)
+		email = readLine()
+		port = "" // Port is not used with SSL directly in .env, Caddy handles it
+	} else {
+		// Non-SSL Path
+		domainPrompt := ""
+		if lang == "zh-hant" {
+			domainPrompt = "2. 網站網址 (domain，可留空): "
+		} else {
+			domainPrompt = "2. Domain (leave blank for no domain): "
+		}
+		fmt.Print(domainPrompt)
+		domain = readLine()
+
+		if domain == "" {
+			portPrompt := ""
+			if lang == "zh-hant" {
+				portPrompt = "2-1. 請輸入 Port (預設 8080): "
+			} else {
+				portPrompt = "Please enter Port (default 8080): "
+			}
+			fmt.Print(portPrompt)
+			port = readLine()
+			if port == "" {
+				port = "8080"
+			}
+		} else {
+			port = "" // If domain is set, port is usually handled by reverse proxy or not needed in .env
+		}
+		email = ""
+	}
+	return domain, email, useSSL, port
 }
 
-func askMySQL() map[string]string {
-	conf := map[string]string{} // Initialize map
-
-	fmt.Print("3. Modify MySQL parameters? (y/N) ")
+func askMySQL(lang string) map[string]string {
+	conf := map[string]string{}
+	if lang == "zh-hant" {
+		fmt.Print("3. 是否要修改 MySQL 參數？(y/N) ")
+	} else {
+		fmt.Print("3. Modify MySQL parameters? (y/N) ")
+	}
 	choice := strings.ToLower(readLine())
 
 	if !strings.HasPrefix(choice, "y") { // User chose N or pressed Enter
-		conf["root"] = randomPass(13)
-		conf["db"] = ""   // Mark to retain the example value
-		conf["user"] = "" // Mark to retain the example value
-		conf["pass"] = randomPass(13)
+		conf["MYSQL_ROOT_PASSWORD"] = randomPass(13)
+		conf["MYSQL_DATABASE"] = "" // Mark to retain the example value
+		conf["MYSQL_USER"] = ""     // Mark to retain the example value
+		conf["MYSQL_PASSWORD"] = randomPass(13)
 	} else { // User chose Y
-		fmt.Print("3-1. MYSQL_ROOT_PASSWORD (leave blank to auto-generate): ")
-		if v := readLine(); v != "" {
-			conf["root"] = v
+		if lang == "zh-hant" {
+			fmt.Print("3-1. MYSQL_ROOT_PASSWORD (留空自動產生): ")
 		} else {
-			conf["root"] = randomPass(13)
+			fmt.Print("3-1. MYSQL_ROOT_PASSWORD (leave blank for random password): ")
 		}
-
-		fmt.Print("3-2. MYSQL_DATABASE (leave blank to keep example value): ")
-		conf["db"] = readLine() // If empty, the main function will skip updateEnv
-
-		fmt.Print("3-3. MYSQL_USER (leave blank to keep example value): ")
-		conf["user"] = readLine() // If empty, the main function will skip updateEnv
-
-		fmt.Print("3-4. MYSQL_PASSWORD (leave blank to auto-generate): ")
 		if v := readLine(); v != "" {
-			conf["pass"] = v
+			conf["MYSQL_ROOT_PASSWORD"] = v
 		} else {
-			conf["pass"] = randomPass(13)
+			conf["MYSQL_ROOT_PASSWORD"] = randomPass(13)
 		}
 	}
 	return conf // Now always returns a map
 }
 
-func askPassword() string {
-	pass := readPassword("5. ADMIN_LOGIN_PASSWORD (leave blank and the installer will provide a random password): ")
+func askAdminCredentials(lang string) (string, string) {
+	user := askUsername(lang)
+	pass := askPassword(lang)
+	return user, pass
+}
+
+func askUsername(lang string) string {
+	var prompt string
+	if lang == "zh-hant" {
+		prompt = "4. ADMIN_LOGIN_USER (leave blank for example value): "
+	} else {
+		prompt = "4. ADMIN_LOGIN_USER (leave blank for example value): "
+	}
+	fmt.Print(prompt)
+	user := readLine()
+	if user == "" {
+		return "example" // Default to 'example' if blank
+	}
+	return user
+}
+
+func askPassword(lang string) string {
+	var passPrompt, confirmPrompt, mismatchMsg, reEnterPrompt string
+	if lang == "zh-hant" {
+		passPrompt = "5. ADMIN_LOGIN_PASSWORD (留空自動產生): "
+		confirmPrompt = "5.1 請再次輸入密碼確認: "
+		mismatchMsg = "   ✗ 兩次不一致，請重新輸入。"
+		reEnterPrompt = "5. 重新輸入密碼: "
+	} else {
+		passPrompt = "5. ADMIN_LOGIN_PASSWORD (leave blank and the installer will provide a random password): "
+		confirmPrompt = "5.1 Please re-enter password to confirm: "
+		mismatchMsg = "   ✗ Passwords do not match. Please re-enter."
+		reEnterPrompt = "5. Re-enter password: "
+	}
+
+	pass := readPassword(passPrompt)
 	if pass == "" {
-		return "" // Return empty string if user leaves it blank
+		return randomPass(11) // Auto-generate if blank, do not print
 	}
 	for {
-		confirm := readPassword("5.1 Please re-enter password to confirm: ")
+		confirm := readPassword(confirmPrompt)
 		if pass == confirm {
 			return pass
 		}
-		fmt.Println("   ✗ Passwords do not match. Please re-enter.")
-		pass = readPassword("5. Re-enter password: ")
+		fmt.Println(mismatchMsg)
+		pass = readPassword(reEnterPrompt) // Use the translated re-enter prompt
 	}
 }
 
 // --------- File and String Processing ---------
+func dockerComposeUp(composeFile string) {
+	cmd := exec.Command("docker", "compose", "-f", composeFile, "up", "-d")
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		fmt.Printf("Error starting docker compose: %v\n", err)
+		// Decide if to os.Exit(1) or let the user know and continue
+	}
+}
+
 func copyFile(src, dst string) {
 	in, _ := os.ReadFile(src)
 	_ = os.WriteFile(dst, in, 0644)
@@ -300,10 +364,10 @@ func readLine() string {
 func askLine(prompt string) string { fmt.Print(prompt); return readLine() }
 
 func readPassword(prompt string) string {
-    // On Windows, exec.Command("bash", "-c", "read -rs ...") is unlikely to work
-    // without a specific setup like WSL and bash in PATH.
-    // For now, using a simple readLine to ensure the prompt waits for input.
-    // This will not hide the password input.
-    fmt.Print(prompt) // Prompt is from the caller
-    return readLine()
+	// On Windows, exec.Command("bash", "-c", "read -rs ...") is unlikely to work
+	// without a specific setup like WSL and bash in PATH.
+	// For now, using a simple readLine to ensure the prompt waits for input.
+	// This will not hide the password input.
+	fmt.Print(prompt) // Prompt is from the caller
+	return readLine()
 }
