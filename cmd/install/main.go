@@ -27,6 +27,12 @@ func main() {
 	// 1. Check if docker compose is available
 	haveDocker := checkDockerCompose()
 
+	// check if .env exists
+	if _, err := os.Stat(targetFile); err == nil {
+		fmt.Println("\n.env file already exists. Please remove it if you want to re-run the installer.")
+		os.Exit(1)
+	}
+
 	lang := chooseLanguage()
 
 	if lang == "zh-hant" {
