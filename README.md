@@ -4,6 +4,16 @@
 - Docker
 - Docker compose
 
+## Quick Install
+
+You can simply run the installer script and follow the on-screen instructions:
+
+```sh
+./install
+```
+
+This will guide you through all necessary configuration and setup steps interactively.
+
 ## Installation Steps
 
 1. **Clone the repository:**

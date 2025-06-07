@@ -20,12 +20,116 @@ const (
 var reader = bufio.NewReader(os.Stdin)
 var envVars = make(map[string]string) // 用於儲存環境變數
 
+// backupFile 備份指定的檔案或資料夾
+func backupFile(originalPath string) (string, error) {
+	// 嘗試以 .bak, .bak1, .bak2... 為後綴進行備份
+	backupPath := originalPath + ".bak"
+	count := 0
+	for {
+		_, err := os.Stat(backupPath)
+		if os.IsNotExist(err) {
+			break
+		}
+		count++
+		backupPath = fmt.Sprintf("%s.bak%d", originalPath, count)
+	}
+
+	// 檢查原始檔案是否存在
+	_, err := os.Stat(originalPath)
+	if os.IsNotExist(err) {
+		return "", fmt.Errorf("%s 不存在，無法備份", originalPath)
+	}
+
+	// 將檔案或資料夾改名為備份名稱
+	err = os.Rename(originalPath, backupPath)
+	if err != nil {
+		return "", fmt.Errorf("無法備份 %s: %v", originalPath, err)
+	}
+
+	return backupPath, nil
+}
+
+// backupEnvFile 備份現有的 .env 檔案
+func backupEnvFile() (string, error) {
+	return backupFile(targetFile)
+}
+
+// checkMariaDBData 檢查 data/mariadb_data 資料夾是否存在且有資料
+func checkMariaDBData() bool {
+	mariadbPath := "data/mariadb_data"
+
+	// 檢查資料夾是否存在
+	info, err := os.Stat(mariadbPath)
+	if os.IsNotExist(err) || !info.IsDir() {
+		return false
+	}
+
+	// 檢查資料夾是否有檔案
+	files, err := os.ReadDir(mariadbPath)
+	if err != nil || len(files) == 0 {
+		return false
+	}
+
+	return true
+}
+
 func main() {
 	// First, check if .env exists
 	if _, err := os.Stat(targetFile); err == nil {
-		fmt.Println(".env file already exists. Please remove it if you want to re-run the installer.")
-		fmt.Println(".env 檔案已存在，請移除後再重新執行安裝程式。")
-		os.Exit(1)
+		// 檢查是否有 data/mariadb_data 資料夾和檔案
+		hasMariaDBData := checkMariaDBData()
+
+		if hasMariaDBData {
+			// 已有 data/mariadb_data 和檔案，詢問是否直接啟動
+			fmt.Println("發現現有的資料庫檔案，看起來這是一個已經安裝好的網站。")
+			fmt.Print("是否要直接啟動網站？(y/N) ")
+			choice := strings.ToLower(readLine())
+			if strings.HasPrefix(choice, "y") {
+				// 檢查是否存在 data/Caddyfile 檔案
+				_, err := os.Stat("data/Caddyfile")
+				hasCaddyfile := err == nil // 如果沒有錯誤，表示檔案存在
+
+				fmt.Println("正在啟動網站...")
+
+				var cmd *exec.Cmd
+				if hasCaddyfile {
+					// 如果有 Caddyfile，使用 SSL 版本
+					fmt.Println("(使用 SSL 配置啟動)")
+					cmd = exec.Command("docker", "compose", "-f", "docker-compose-ssl.yaml", "up", "-d")
+				} else {
+					// 如果沒有 Caddyfile，使用預設版本
+					fmt.Println("(使用非 SSL 配置啟動)")
+					cmd = exec.Command("docker", "compose", "up", "-d")
+				}
+
+				cmd.Stdout = os.Stdout
+				cmd.Stderr = os.Stderr
+				if err := cmd.Run(); err != nil {
+					fmt.Printf("啟動網站失敗: %v\n", err)
+				} else {
+					fmt.Println("網站已成功啟動！")
+				}
+				os.Exit(0)
+			}
+		}
+
+		// 沒有資料庫檔案或用戶選擇不直接啟動
+		fmt.Print("已發現 .env 檔案，是否要更改設定？(若要的話舊的 .env 檔會改名備份) (y/N) ")
+		choice := strings.ToLower(readLine())
+
+		if !strings.HasPrefix(choice, "y") {
+			fmt.Println("安裝取消。")
+			os.Exit(0)
+		}
+
+		// 備份現有的 .env 檔案
+		backupFile, err := backupEnvFile()
+		if err != nil {
+			fmt.Printf("%v\n安裝取消。\n", err)
+			os.Exit(1)
+		}
+
+		fmt.Printf("已將舊的 .env 檔案備份為 %s\n", backupFile)
 	}
 
 	// 1. Check if docker compose is available
@@ -160,9 +264,9 @@ func askDomainAndSSL(lang string) (string, string, bool, string) {
 		// Non-SSL Path
 		domainPrompt := ""
 		if lang == "zh-hant" {
-			domainPrompt = "2. 網站網址 (domain，可留空): "
+			domainPrompt = "網站網址 (domain，可留空): "
 		} else {
-			domainPrompt = "2. Domain (leave blank for no domain): "
+			domainPrompt = "Domain (leave blank for no domain): "
 		}
 		fmt.Print(domainPrompt)
 		domain = readLine()
@@ -170,7 +274,7 @@ func askDomainAndSSL(lang string) (string, string, bool, string) {
 		if domain == "" {
 			portPrompt := ""
 			if lang == "zh-hant" {
-				portPrompt = "2-1. 請輸入 Port (預設 8080): "
+				portPrompt = "請輸入 Port (預設 8080): "
 			} else {
 				portPrompt = "Please enter Port (default 8080): "
 			}
@@ -187,32 +291,78 @@ func askDomainAndSSL(lang string) (string, string, bool, string) {
 	return domain, email, useSSL, port
 }
 
+func askMySQLPassword(lang string, passwordName string) string {
+	var passPrompt, confirmPrompt, mismatchMsg, reEnterPrompt string
+	if lang == "zh-hant" {
+		passPrompt = passwordName + " (留空自動產生): "
+		confirmPrompt = "請再次輸入" + passwordName + "密碼確認: "
+		mismatchMsg = "   ✗ 兩次密碼不一致，請重新輸入。"
+		reEnterPrompt = "重新輸入" + passwordName + ": "
+	} else {
+		passPrompt = passwordName + " (leave blank for random password): "
+		confirmPrompt = "Please re-enter " + passwordName + " to confirm: "
+		mismatchMsg = "   ✗ Passwords do not match. Please re-enter."
+		reEnterPrompt = "Re-enter " + passwordName + ": "
+	}
+
+	pass := readPassword(passPrompt)
+	if pass == "" {
+		return randomPass(13) // Auto-generate if blank, do not print
+	}
+	for {
+		confirm := readPassword(confirmPrompt)
+		if pass == confirm {
+			return pass
+		}
+		fmt.Println(mismatchMsg)
+		pass = readPassword(reEnterPrompt)
+	}
+}
+
 func askMySQL(lang string) map[string]string {
 	conf := map[string]string{}
+
 	if lang == "zh-hant" {
-		fmt.Print("3. 是否要修改 MySQL 參數？(y/N) ")
+		fmt.Print("是否要修改 MySQL 參數？(y/N) ")
 	} else {
-		fmt.Print("3. Modify MySQL parameters? (y/N) ")
+		fmt.Print("Modify MySQL parameters? (y/N) ")
 	}
 	choice := strings.ToLower(readLine())
 
 	if !strings.HasPrefix(choice, "y") { // User chose N or pressed Enter
+		// 自動產生密碼，但保留預設的其他字段
 		conf["MYSQL_ROOT_PASSWORD"] = randomPass(13)
 		conf["MYSQL_DATABASE"] = "" // Mark to retain the example value
 		conf["MYSQL_USER"] = ""     // Mark to retain the example value
 		conf["MYSQL_PASSWORD"] = randomPass(13)
 	} else { // User chose Y
+		// ROOT 密碼
+		conf["MYSQL_ROOT_PASSWORD"] = askMySQLPassword(lang, "MYSQL_ROOT_PASSWORD")
+
+		// 資料庫名稱
 		if lang == "zh-hant" {
-			fmt.Print("3-1. MYSQL_ROOT_PASSWORD (留空自動產生): ")
+			fmt.Print("MYSQL_DATABASE (留空使用預設值): ")
 		} else {
-			fmt.Print("3-1. MYSQL_ROOT_PASSWORD (leave blank for random password): ")
+			fmt.Print("MYSQL_DATABASE (leave blank for default): ")
 		}
 		if v := readLine(); v != "" {
-			conf["MYSQL_ROOT_PASSWORD"] = v
-		} else {
-			conf["MYSQL_ROOT_PASSWORD"] = randomPass(13)
+			conf["MYSQL_DATABASE"] = v
 		}
+
+		// 用戶名稱
+		if lang == "zh-hant" {
+			fmt.Print("MYSQL_USER (留空使用預設值): ")
+		} else {
+			fmt.Print("MYSQL_USER (leave blank for default): ")
+		}
+		if v := readLine(); v != "" {
+			conf["MYSQL_USER"] = v
+		}
+
+		// 用戶密碼
+		conf["MYSQL_PASSWORD"] = askMySQLPassword(lang, "MYSQL_PASSWORD")
 	}
+
 	return conf // Now always returns a map
 }
 
@@ -225,9 +375,9 @@ func askAdminCredentials(lang string) (string, string) {
 func askUsername(lang string) string {
 	var prompt string
 	if lang == "zh-hant" {
-		prompt = "4. ADMIN_LOGIN_USER (留空自動產生): "
+		prompt = "ADMIN_LOGIN_USER (留空自動產生): "
 	} else {
-		prompt = "4. ADMIN_LOGIN_USER (leave blank for example value): "
+		prompt = "ADMIN_LOGIN_USER (leave blank for example value): "
 	}
 	fmt.Print(prompt)
 	user := readLine()
@@ -240,15 +390,15 @@ func askUsername(lang string) string {
 func askPassword(lang string) string {
 	var passPrompt, confirmPrompt, mismatchMsg, reEnterPrompt string
 	if lang == "zh-hant" {
-		passPrompt = "5. ADMIN_LOGIN_PASSWORD (留空自動產生): "
-		confirmPrompt = "5.1 請再次輸入密碼確認: "
+		passPrompt = "ADMIN_LOGIN_PASSWORD (留空自動產生): "
+		confirmPrompt = "請再次輸入密碼確認: "
 		mismatchMsg = "   ✗ 兩次不一致，請重新輸入。"
-		reEnterPrompt = "5. 重新輸入密碼: "
+		reEnterPrompt = "重新輸入密碼: "
 	} else {
-		passPrompt = "5. ADMIN_LOGIN_PASSWORD (leave blank and the installer will provide a random password): "
-		confirmPrompt = "5.1 Please re-enter password to confirm: "
+		passPrompt = "ADMIN_LOGIN_PASSWORD (leave blank and the installer will provide a random password): "
+		confirmPrompt = "Please re-enter password to confirm: "
 		mismatchMsg = "   ✗ Passwords do not match. Please re-enter."
-		reEnterPrompt = "5. Re-enter password: "
+		reEnterPrompt = "Re-enter password: "
 	}
 
 	pass := readPassword(passPrompt)
@@ -423,13 +573,45 @@ func readLine() string {
 	return strings.TrimSpace(text)
 }
 
-func askLine(prompt string) string { fmt.Print(prompt); return readLine() }
-
 func readPassword(prompt string) string {
-	// On Windows, exec.Command("bash", "-c", "read -rs ...") is unlikely to work
-	// without a specific setup like WSL and bash in PATH.
-	// For now, using a simple readLine to ensure the prompt waits for input.
-	// This will not hide the password input.
-	fmt.Print(prompt) // Prompt is from the caller
-	return readLine()
+	fmt.Print(prompt)
+
+	// 嘗試使用 stty 來隱藏密碼輸入，這在 Linux/Mac 環境下比較可靠
+	cmd := exec.Command("bash", "-c", "stty -echo; cat; stty echo")
+	cmd.Stdin = os.Stdin
+	cmd.Stderr = os.Stderr
+
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		fmt.Printf("\n無法建立安全的密碼輸入: %v\n", err)
+		return readLine()
+	}
+
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		fmt.Printf("\n無法建立安全的密碼輸入: %v\n", err)
+		return readLine()
+	}
+
+	if err := cmd.Start(); err != nil {
+		fmt.Printf("\n無法建立安全的密碼輸入: %v\n", err)
+		return readLine()
+	}
+
+	password, err := bufio.NewReader(stdout).ReadString('\n')
+	fmt.Println() // 添加換行，因為 stty -echo 不會自動換行
+
+	// 關閉 stdin 來結束命令
+	stdin.Close()
+
+	err = cmd.Wait()
+	if err != nil {
+		// 如果密碼輸入失敗，則將密碼輸入設置為可見並重試
+		fmt.Printf("\n無法安全地讀取密碼: %v\n請純簡輸入: ", err)
+		return readLine()
+	}
+
+	// 移除尾端的換行符
+	password = strings.TrimSpace(password)
+	return password
 }
