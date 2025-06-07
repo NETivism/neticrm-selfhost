@@ -48,7 +48,7 @@
 1. **設定您的 Caddyfile：**
     ```sh
     # 編輯 Caddyfile，加入您的網域和電子郵件
-    nano Caddyfile
+    nano data/Caddyfile
     ```
     
     Caddyfile 內容範例：
