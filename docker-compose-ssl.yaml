@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   caddy:
     image: caddy:latest
@@ -9,9 +7,9 @@ services:
       - "80:80"
       - "443:443"
     volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile
-      - ./caddy_data:/data
-      - ./caddy_config:/config
+      - ./data/Caddyfile:/etc/caddy/Caddyfile
+      - ./data/caddy_data:/data
+      - ./data/caddy_config:/config
     networks:
       - neticrm_network
 
@@ -25,7 +23,7 @@ services:
       MARIADB_USER: ${MYSQL_USER}
       MARIADB_PASSWORD: ${MYSQL_PASSWORD}
     volumes:
-      - ./mariadb_data:/var/lib/mysql
+      - ./data/mariadb_data:/var/lib/mysql
       - ./container/mysql/my.cnf:/etc/mysql/my.cnf
       - ./container/mysql/initdb.d:/docker-entrypoint-initdb.d
     networks:
@@ -45,7 +43,7 @@ services:
       ADMIN_LOGIN_PASSWORD: ${ADMIN_LOGIN_PASSWORD}
       LANGUAGE: ${LANGUAGE}
     volumes:
-      - ./www:/var/www/html
+      - ./data/www:/var/www/html
       - ./container/init-10.sh:/init.sh
       - ./container/supervisord/supervisord.conf:/etc/supervisor/conf.d/supervisord.conf
     depends_on:
@@ -58,7 +56,7 @@ services:
     container_name: neticrm-nginx
     restart: always
     volumes:
-      - ./www:/var/www/html:ro
+      - ./data/www:/var/www/html:ro
       - ./container/nginx/conf.d:/etc/nginx/conf.d
     depends_on:
       - php-fpm

@@ -48,7 +48,7 @@ For production environments, it's recommended to use SSL. This repository includ
 1. **Configure your Caddyfile:**
     ```sh
     # Edit the Caddyfile with your domain and email
-    nano Caddyfile
+    nano data/Caddyfile
     ```
 
     Example Caddyfile content:

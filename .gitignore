@@ -2,13 +2,13 @@
 .*
 
 # Ignore MariaDB data directory
-mariadb_data/
+data/mariadb_data/
 
 # Ignore www directory
-www/
-sites/
+data/www/
+data/sites/
 
 # Ignore Caddy data directory
-caddy_data/
-caddy_config/
-Caddyfile
+data/caddy_data/
+data/caddy_config/
+data/Caddyfile
