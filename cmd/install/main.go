@@ -5,7 +5,6 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"fmt"
-	"math/big"
 	"os"
 	"os/exec"
 	"strings"
@@ -19,19 +18,21 @@ const (
 )
 
 var reader = bufio.NewReader(os.Stdin)
+var envVars = make(map[string]string) // 用於儲存環境變數
 
 func main() {
-	// First, copy example.env to .env to ensure a base file exists
-	copyFile(exampleFile, targetFile)
+	// First, check if .env exists
+	if _, err := os.Stat(targetFile); err == nil {
+		fmt.Println(".env file already exists. Please remove it if you want to re-run the installer.")
+		fmt.Println(".env 檔案已存在，請移除後再重新執行安裝程式。")
+		os.Exit(1)
+	}
 
 	// 1. Check if docker compose is available
 	haveDocker := checkDockerCompose()
 
-	// check if .env exists
-	if _, err := os.Stat(targetFile); err == nil {
-		fmt.Println("\n.env file already exists. Please remove it if you want to re-run the installer.")
-		os.Exit(1)
-	}
+	// 載入預設環境變數
+	loadDefaultEnvs()
 
 	lang := chooseLanguage()
 
@@ -79,6 +80,9 @@ func main() {
 	if useSSL {
 		composeFile = "docker-compose-ssl.yaml"
 	}
+
+	// 在這裡生成 .env 檔案
+	writeEnvFile()
 
 	if lang == "zh-hant" {
 		fmt.Printf("✅ .env 建立完成，開始 docker compose -f %s up -d ...\n", composeFile)
@@ -221,7 +225,7 @@ func askAdminCredentials(lang string) (string, string) {
 func askUsername(lang string) string {
 	var prompt string
 	if lang == "zh-hant" {
-		prompt = "4. ADMIN_LOGIN_USER (leave blank for example value): "
+		prompt = "4. ADMIN_LOGIN_USER (留空自動產生): "
 	} else {
 		prompt = "4. ADMIN_LOGIN_USER (leave blank for example value): "
 	}
@@ -272,60 +276,112 @@ func dockerComposeUp(composeFile string) {
 	}
 }
 
-func copyFile(src, dst string) {
-	in, _ := os.ReadFile(src)
-	_ = os.WriteFile(dst, in, 0644)
-}
+// 不再使用 copyFile 函數
 
 func updateEnv(key, val string) {
-	// If the value is empty, keep the original value (do not update)
+	// 如果值為空，則不更新環境變數
 	if val == "" {
 		return
 	}
 
-	// Read the entire file content
-	data, err := os.ReadFile(targetFile)
+	// 將鍵值對存入映射
+	envVars[key] = val
+}
+
+// 載入預設環境變數
+func loadDefaultEnvs() {
+	data, err := os.ReadFile(exampleFile)
 	if err != nil {
-		fmt.Printf("Error reading file %s: %v\n", targetFile, err)
+		fmt.Printf("Error reading example file %s: %v\n", exampleFile, err)
 		return
 	}
 
-	// Split file content into lines
+	// 分割檔案內容為行
 	lines := strings.Split(string(data), "\n")
 
-	// Find and update matching lines
-	found := false
-	for i, line := range lines {
-		// Ignore comment lines and empty lines
-		if strings.HasPrefix(line, "#") || strings.TrimSpace(line) == "" {
+	// 解析每一行，提取環境變數
+	for _, line := range lines {
+		// 忽略註解行和空行
+		if strings.HasPrefix(strings.TrimSpace(line), "#") || strings.TrimSpace(line) == "" {
 			continue
 		}
 
-		// Check if it's the target variable
-		if strings.HasPrefix(line, key+"=") || strings.HasPrefix(line, key+" =") {
-			lines[i] = fmt.Sprintf("%s=%s", key, val)
-			found = true
-			break
+		// 分割 key=value
+		parts := strings.SplitN(strings.TrimSpace(line), "=", 2)
+		if len(parts) == 2 {
+			key := strings.TrimSpace(parts[0])
+			val := strings.TrimSpace(parts[1])
+			// 預設值加入到環境變數映射
+			envVars[key] = val
 		}
-	}
-
-	// If no matching line is found, add a new line
-	if !found {
-		lines = append(lines, fmt.Sprintf("%s=%s", key, val))
-	}
-
-	// Write the updated content back to the file
-	out := []byte(strings.Join(lines, "\n"))
-	err = os.WriteFile(targetFile, out, 0644)
-	if err != nil {
-		fmt.Printf("Error writing file %s: %v\n", targetFile, err)
 	}
 }
 
-// --------- Random Value Utilities ---------
-func randomPort() string {
-	n, _ := rand.Int(rand.Reader, big.NewInt(10000))
-	return fmt.Sprintf("%d", n.Int64()+50001)
+// 將收集到的環境變數寫入 .env 檔案
+func writeEnvFile() {
+	// 讀取 example.env 以保留註釋和結構
+	data, err := os.ReadFile(exampleFile)
+	if err != nil {
+		fmt.Printf("Error reading example file %s: %v\n", exampleFile, err)
+
+		// 如果無法讀取範例檔，則直接寫入環境變數
+		var content strings.Builder
+		for key, val := range envVars {
+			fmt.Fprintf(&content, "%s=%s\n", key, val)
+		}
+
+		// 寫入檔案
+		err = os.WriteFile(targetFile, []byte(content.String()), 0644)
+		if err != nil {
+			fmt.Printf("Error writing file %s: %v\n", targetFile, err)
+		}
+		return
+	}
+
+	// 分割檔案內容為行
+	lines := strings.Split(string(data), "\n")
+	var newContent strings.Builder
+
+	// 處理每一行
+	for _, line := range lines {
+		trimmedLine := strings.TrimSpace(line)
+
+		// 保留註解行和空行
+		if strings.HasPrefix(trimmedLine, "#") || trimmedLine == "" {
+			fmt.Fprintln(&newContent, line)
+			continue
+		}
+
+		// 處理環境變數行
+		parts := strings.SplitN(trimmedLine, "=", 2)
+		if len(parts) == 2 {
+			key := strings.TrimSpace(parts[0])
+
+			// 如果我們有用戶提供的值，使用它
+			if val, ok := envVars[key]; ok {
+				fmt.Fprintf(&newContent, "%s=%s\n", key, val)
+				// 從映射中刪除，這樣我們可以跟踪哪些變數尚未寫入
+				delete(envVars, key)
+			} else {
+				// 保留原始行
+				fmt.Fprintln(&newContent, line)
+			}
+		} else {
+			// 不是環境變數格式，保留原始行
+			fmt.Fprintln(&newContent, line)
+		}
+	}
+
+	// 添加任何剩餘的環境變數
+	for key, val := range envVars {
+		fmt.Fprintf(&newContent, "%s=%s\n", key, val)
+	}
+
+	// 寫入檔案
+	err = os.WriteFile(targetFile, []byte(newContent.String()), 0644)
+	if err != nil {
+		fmt.Printf("Error writing file %s: %v\n", targetFile, err)
+	}
 }
 
 func randomPass(length int) string {
@@ -342,7 +398,7 @@ func checkDockerCompose() bool {
 }
 
 func updateCaddyfile(oldValue, newValue string) {
-	filePath := "Caddyfile"
+	filePath := "data/Caddyfile"
 
 	// Read file
 	data, err := os.ReadFile(filePath)
