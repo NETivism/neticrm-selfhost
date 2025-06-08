@@ -56,7 +56,11 @@
 對於生產環境，建議使用 SSL。此程式碼庫包含一個 `docker-compose-ssl.yaml` 組態，使用 Caddy 作為反向代理自動處理 SSL。
 
 1. **設定您的 Caddyfile：**
+    
+    重新命名或複製範例設定檔：
+
     ```sh
+    cp data/example.Caddyfile data/Caddyfile
     # 編輯 Caddyfile，加入您的網域和電子郵件
     nano data/Caddyfile
     ```

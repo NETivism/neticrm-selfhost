@@ -56,7 +56,12 @@ This will guide you through all necessary configuration and setup steps interact
 For production environments, it's recommended to use SSL. This repository includes a `docker-compose-ssl.yaml` configuration that uses Caddy as a reverse proxy to handle SSL automatically.
 
 1. **Configure your Caddyfile:**
+
+    Rename or copy the example configuration file:
+
     ```sh
+    cp data/example.Caddyfile data/Caddyfile
+   
     # Edit the Caddyfile with your domain and email
     nano data/Caddyfile
     ```

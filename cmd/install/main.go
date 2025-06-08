@@ -1,13 +1,16 @@
 package main
 
 import (
-	"bufio"
 	"crypto/rand"
-	"encoding/base64"
 	"fmt"
+	"math/big"
 	"os"
 	"os/exec"
 	"strings"
+
+	"github.com/AlecAivazis/survey/v2"
+	"github.com/fatih/color"
+	"github.com/joho/godotenv"
 )
 
 const (
@@ -15,603 +18,870 @@ const (
 	targetFile         = ".env"
 	defaultComposeFile = "docker-compose.yaml"
 	sslComposeFile     = "docker-compose-ssl.yaml"
+	caddyfile          = "data/Caddyfile"
+	exampleCaddyfile   = "data/example.Caddyfile"
 )
 
-var reader = bufio.NewReader(os.Stdin)
-var envVars = make(map[string]string) // 用於儲存環境變數
+// Config 保存所有配置
+type Config struct {
+	Language           string
+	Domain             string
+	Email              string
+	UseSSL             bool
+	Port               string
+	MySQLRootPassword  string
+	MySQLDatabase      string
+	MySQLUser          string
+	MySQLPassword      string
+	AdminLoginUser     string
+	AdminLoginPassword string
+	envVars            map[string]string
+}
 
-// backupFile 備份指定的檔案或資料夾
-func backupFile(originalPath string) (string, error) {
-	// 嘗試以 .bak, .bak1, .bak2... 為後綴進行備份
-	backupPath := originalPath + ".bak"
-	count := 0
-	for {
-		_, err := os.Stat(backupPath)
-		if os.IsNotExist(err) {
-			break
-		}
-		count++
-		backupPath = fmt.Sprintf("%s.bak%d", originalPath, count)
+var (
+	green  = color.New(color.FgGreen)
+	red    = color.New(color.FgRed)
+	yellow = color.New(color.FgYellow)
+	cyan   = color.New(color.FgCyan)
+	bold   = color.New(color.Bold)
+)
+
+func main() {
+	bold.Println("netiCRM Self-Host 自架站台安裝程式")
+	fmt.Println()
+
+	// 檢查階段
+	if err := goCheck(); err != nil {
+		red.Printf("✗ 檢查失敗: %v\n", err)
+		os.Exit(1)
 	}
 
-	// 檢查原始檔案是否存在
-	_, err := os.Stat(originalPath)
-	if os.IsNotExist(err) {
-		return "", fmt.Errorf("%s 不存在，無法備份", originalPath)
-	}
-
-	// 將檔案或資料夾改名為備份名稱
-	err = os.Rename(originalPath, backupPath)
+	// 詢問階段
+	cfg, err := goAsk()
 	if err != nil {
-		return "", fmt.Errorf("無法備份 %s: %v", originalPath, err)
+		red.Printf("✗ 設定失敗: %v\n", err)
+		os.Exit(1)
 	}
 
-	return backupPath, nil
+	// 執行階段
+	if err := goRun(cfg); err != nil {
+		red.Printf("✗ 執行失敗: %v\n", err)
+		os.Exit(1)
+	}
+
+	green.Println("✅ 安裝完成！")
 }
 
-// backupEnvFile 備份現有的 .env 檔案
-func backupEnvFile() (string, error) {
-	return backupFile(targetFile)
+// goCheck 進行所有事前檢查
+func goCheck() error {
+	// 檢查是否有 .env 和資料庫檔案
+	hasEnv := fileExists(targetFile)
+	hasMariaDBData := checkMariaDBData()
+
+	if hasEnv && hasMariaDBData {
+		yellow.Println("發現現有的資料庫檔案，看起來這是一個已經安裝好的網站。")
+
+		// 讀取現有配置
+		existingEnv, _ := godotenv.Read(targetFile)
+		domain := existingEnv["DOMAIN"]
+		port := existingEnv["HTTP_PORT"]
+		adminUser := existingEnv["ADMIN_LOGIN_USER"]
+
+		// 如果有 Caddyfile，嘗試從中獲取域名
+		if fileExists(caddyfile) {
+			if caddyDomain := getDomainFromCaddyfile(); caddyDomain != "" {
+				domain = caddyDomain
+			}
+		}
+
+		fmt.Println()
+		cyan.Println("現有配置：")
+		if domain != "" && domain != "localhost" {
+			fmt.Printf("  域名 Domain: %s\n", domain)
+		}
+		if port != "" {
+			fmt.Printf("  端口 Port: %s\n", port)
+		}
+		if adminUser != "" {
+			fmt.Printf("  管理員帳號: %s\n", adminUser)
+		}
+		fmt.Println()
+
+		options := []string{
+			"1. 執行 docker 啟動指令（若已啟動則不影響）",
+			"2. 備份網站檔案並覆蓋設定",
+			"3. 檢視初始設定管理員密碼 ADMIN_LOGIN_PASSWORD",
+			"4. 結束安裝",
+		}
+
+		var choice string
+		prompt := &survey.Select{
+			Message: "請選擇操作（上下鍵選取，或按下數字鍵後 enter）：",
+			Options: options,
+		}
+		if err := survey.AskOne(prompt, &choice); err != nil {
+			return err
+		}
+
+		switch choice {
+		case options[0]: // 執行 docker 啟動指令
+			return startDocker()
+		case options[1]: // 備份並覆蓋配置
+			if err := backupExisting(); err != nil {
+				return err
+			}
+		case options[2]: // 檢視密碼
+			yellow.Println("⚠️  注意：此會用明文顯示初始密碼，且可能已更改")
+			var confirmShow bool
+			confirmPrompt := &survey.Confirm{
+				Message: "確定要顯示密碼嗎？",
+				Default: false,
+			}
+			if err := survey.AskOne(confirmPrompt, &confirmShow); err != nil {
+				return err
+			}
+
+			if confirmShow {
+				if pass := existingEnv["ADMIN_LOGIN_PASSWORD"]; pass != "" {
+					fmt.Printf("ADMIN_LOGIN_PASSWORD: %s\n", pass)
+				} else {
+					fmt.Println("密碼未設定或為空")
+				}
+			}
+			os.Exit(0)
+		case options[3]: // 結束安裝
+			fmt.Println("安裝取消。")
+			os.Exit(0)
+		}
+	} else if hasEnv {
+		// 只有 .env 沒有資料庫
+		yellow.Println("發現現有的 .env 檔案")
+
+		// 讀取並顯示現有配置
+		existingEnv, _ := godotenv.Read(targetFile)
+		domain := existingEnv["DOMAIN"]
+		port := existingEnv["HTTP_PORT"]
+		adminUser := existingEnv["ADMIN_LOGIN_USER"]
+
+		// 如果有 Caddyfile，優先使用其中的域名
+		if fileExists(caddyfile) {
+			if caddyDomain := getDomainFromCaddyfile(); caddyDomain != "" {
+				domain = caddyDomain
+			}
+		}
+
+		if domain != "" || port != "" || adminUser != "" {
+			fmt.Println()
+			cyan.Println("現有配置：")
+			if domain != "" && domain != "localhost" {
+				fmt.Printf("  域名: %s\n", domain)
+			}
+			if port != "" {
+				fmt.Printf("  端口: %s\n", port)
+			}
+			if adminUser != "" {
+				fmt.Printf("  管理員: %s\n", adminUser)
+			}
+			fmt.Println()
+		}
+
+		var overwrite bool
+		prompt := &survey.Confirm{
+			Message: "是否要更改設定？(舊的 .env 檔會改名備份)",
+			Default: false,
+		}
+		if err := survey.AskOne(prompt, &overwrite); err != nil {
+			return err
+		}
+
+		if !overwrite {
+			fmt.Println("安裝取消。")
+			os.Exit(0)
+		}
+
+		if err := backupFile(targetFile); err != nil {
+			return err
+		}
+	}
+
+	// 檢查 Docker
+	if err := checkDocker(); err != nil {
+		yellow.Printf("⚠️  %v\n", err)
+
+		var proceed bool
+		prompt := &survey.Confirm{
+			Message: "是否要繼續僅更改 .env 檔案？",
+			Default: false,
+		}
+		if err := survey.AskOne(prompt, &proceed); err != nil {
+			return err
+		}
+
+		if !proceed {
+			fmt.Println("建議先安裝 Docker，安裝取消。")
+			os.Exit(0)
+		}
+	}
+
+	// 檢查 Caddyfile
+	if fileExists(caddyfile) {
+		cyan.Println("發現 Caddyfile，可使用 SSL 配置。")
+		if domain := getDomainFromCaddyfile(); domain != "" {
+			fmt.Printf("現有 SSL 域名：%s\n", domain)
+		}
+	}
+
+	return nil
 }
 
-// checkMariaDBData 檢查 data/mariadb_data 資料夾是否存在且有資料
+// goAsk 進行所有互動詢問
+func goAsk() (*Config, error) {
+	cfg := &Config{
+		envVars: make(map[string]string),
+	}
+
+	// 載入預設環境變數
+	if err := loadDefaultEnvs(cfg); err != nil {
+		return nil, err
+	}
+
+	// 1. 語言選擇
+	if err := askLanguage(cfg); err != nil {
+		return nil, err
+	}
+
+	// 2. 域名和 SSL 設定
+	fmt.Println()
+	if cfg.Language == "zh-hant" {
+		cyan.Println("若您已有域名（Domain），請先將域名以A紀錄設到本主機 IP")
+		cyan.Println("本安裝程式可自動幫您設定 SSL 並綁定網域")
+		cyan.Println("或依照您所選的設定綁定特定埠（Port）")
+	} else {
+		cyan.Println("If you already have a domain name, please point it to this host's IP address.")
+		cyan.Println("This installer can automatically set up SSL and bind the domain for you,")
+		cyan.Println("or bind to a specific port according to your chosen settings.")
+	}
+
+	if err := askDomainAndSSL(cfg); err != nil {
+		return nil, err
+	}
+
+	// 3. MySQL 設定
+	if err := askMySQL(cfg); err != nil {
+		return nil, err
+	}
+
+	// 4. 管理員帳號密碼
+	if err := askAdminCredentials(cfg); err != nil {
+		return nil, err
+	}
+
+	return cfg, nil
+}
+
+// goRun 執行寫入和啟動
+func goRun(cfg *Config) error {
+	// 設定環境變數
+	cfg.envVars["LANGUAGE"] = cfg.Language
+
+	if !cfg.UseSSL {
+		if cfg.Domain != "" {
+			cfg.envVars["DOMAIN"] = cfg.Domain
+			cfg.envVars["HTTP_PORT"] = ""
+		} else {
+			cfg.envVars["DOMAIN"] = "localhost"
+			cfg.envVars["HTTP_PORT"] = cfg.Port
+		}
+	} else {
+		cfg.envVars["HTTP_PORT"] = ""
+	}
+
+	// MySQL 設定
+	cfg.envVars["MYSQL_ROOT_PASSWORD"] = cfg.MySQLRootPassword
+	if cfg.MySQLDatabase != "" {
+		cfg.envVars["MYSQL_DATABASE"] = cfg.MySQLDatabase
+	}
+	if cfg.MySQLUser != "" {
+		cfg.envVars["MYSQL_USER"] = cfg.MySQLUser
+	}
+	cfg.envVars["MYSQL_PASSWORD"] = cfg.MySQLPassword
+
+	// 管理員設定
+	cfg.envVars["ADMIN_LOGIN_USER"] = cfg.AdminLoginUser
+	cfg.envVars["ADMIN_LOGIN_PASSWORD"] = cfg.AdminLoginPassword
+
+	// 寫入 .env
+	if err := writeEnvFile(cfg); err != nil {
+		return fmt.Errorf("寫入 .env 失敗: %w", err)
+	}
+
+	// 更新 Caddyfile
+	if cfg.UseSSL {
+		if err := updateCaddyfile(cfg); err != nil {
+			return fmt.Errorf("更新 Caddyfile 失敗: %w", err)
+		}
+	}
+
+	// 選擇 compose 檔案
+	composeFile := defaultComposeFile
+	if cfg.UseSSL {
+		composeFile = sslComposeFile
+	}
+
+	green.Printf("✅ .env 建立完成\n")
+
+	// 檢查是否有 Docker
+	if err := checkDocker(); err != nil {
+		yellow.Println("Docker Compose 未安裝，請手動執行：")
+		fmt.Printf("docker compose -f %s up -d\n", composeFile)
+		return nil
+	}
+
+	// 執行 docker compose
+	fmt.Printf("開始執行 docker compose -f %s up -d ...\n", composeFile)
+	if err := dockerComposeUp(composeFile); err != nil {
+		return err
+	}
+
+	cyan.Println("服務已啟動，可使用以下指令查看日誌：")
+	fmt.Printf("docker compose -f %s logs -f\n", composeFile)
+
+	return nil
+}
+
+// 輔助函數
+
+func fileExists(path string) bool {
+	_, err := os.Stat(path)
+	return !os.IsNotExist(err)
+}
+
 func checkMariaDBData() bool {
 	mariadbPath := "data/mariadb_data"
-
-	// 檢查資料夾是否存在
 	info, err := os.Stat(mariadbPath)
 	if os.IsNotExist(err) || !info.IsDir() {
 		return false
 	}
 
-	// 檢查資料夾是否有檔案
 	files, err := os.ReadDir(mariadbPath)
-	if err != nil || len(files) == 0 {
-		return false
-	}
-
-	return true
+	return err == nil && len(files) > 0
 }
 
-func main() {
-	// First, check if .env exists
-	if _, err := os.Stat(targetFile); err == nil {
-		// 檢查是否有 data/mariadb_data 資料夾和檔案
-		hasMariaDBData := checkMariaDBData()
+func getDomainFromCaddyfile() string {
+	data, err := os.ReadFile(caddyfile)
+	if err != nil {
+		return ""
+	}
 
-		if hasMariaDBData {
-			// 已有 data/mariadb_data 和檔案，詢問是否直接啟動
-			fmt.Println("發現現有的資料庫檔案，看起來這是一個已經安裝好的網站。")
-			fmt.Print("是否要直接啟動網站？(y/N) ")
-			choice := strings.ToLower(readLine())
-			if strings.HasPrefix(choice, "y") {
-				// 檢查是否存在 data/Caddyfile 檔案
-				_, err := os.Stat("data/Caddyfile")
-				hasCaddyfile := err == nil // 如果沒有錯誤，表示檔案存在
+	// 使用正則表達式尋找域名
+	// 支援多種格式：
+	// - example.com {
+	// - https://example.com {
+	// - example.com:443 {
+	// - example.com, www.example.com {
+	content := string(data)
+	lines := strings.Split(content, "\n")
 
-				fmt.Println("正在啟動網站...")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		// 跳過註解和空行
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
 
-				var cmd *exec.Cmd
-				if hasCaddyfile {
-					// 如果有 Caddyfile，使用 SSL 版本
-					fmt.Println("(使用 SSL 配置啟動)")
-					cmd = exec.Command("docker", "compose", "-f", "docker-compose-ssl.yaml", "up", "-d")
-				} else {
-					// 如果沒有 Caddyfile，使用預設版本
-					fmt.Println("(使用非 SSL 配置啟動)")
-					cmd = exec.Command("docker", "compose", "up", "-d")
+		// 尋找包含 { 的行
+		if strings.Contains(line, "{") {
+			// 提取 { 之前的部分
+			parts := strings.Split(line, "{")
+			if len(parts) > 0 {
+				domainPart := strings.TrimSpace(parts[0])
+				// 移除協議前綴
+				domainPart = strings.TrimPrefix(domainPart, "https://")
+				domainPart = strings.TrimPrefix(domainPart, "http://")
+				// 移除端口
+				if idx := strings.Index(domainPart, ":"); idx != -1 {
+					domainPart = domainPart[:idx]
 				}
-
-				cmd.Stdout = os.Stdout
-				cmd.Stderr = os.Stderr
-				if err := cmd.Run(); err != nil {
-					fmt.Printf("啟動網站失敗: %v\n", err)
-				} else {
-					fmt.Println("網站已成功啟動！")
+				// 如果有多個域名（逗號分隔），取第一個
+				if strings.Contains(domainPart, ",") {
+					domains := strings.Split(domainPart, ",")
+					domainPart = strings.TrimSpace(domains[0])
 				}
-				os.Exit(0)
+				// 驗證是否為有效域名
+				if domainPart != "" && strings.Contains(domainPart, ".") {
+					return domainPart
+				}
 			}
 		}
-
-		// 沒有資料庫檔案或用戶選擇不直接啟動
-		fmt.Print("已發現 .env 檔案，是否要更改設定？(若要的話舊的 .env 檔會改名備份) (y/N) ")
-		choice := strings.ToLower(readLine())
-
-		if !strings.HasPrefix(choice, "y") {
-			fmt.Println("安裝取消。")
-			os.Exit(0)
-		}
-
-		// 備份現有的 .env 檔案
-		backupFile, err := backupEnvFile()
-		if err != nil {
-			fmt.Printf("%v\n安裝取消。\n", err)
-			os.Exit(1)
-		}
-
-		fmt.Printf("已將舊的 .env 檔案備份為 %s\n", backupFile)
 	}
 
-	// 1. Check if docker compose is available
-	haveDocker := checkDockerCompose()
-
-	// 載入預設環境變數
-	loadDefaultEnvs()
-
-	lang := chooseLanguage()
-
-	if lang == "zh-hant" {
-		fmt.Println("\n若您已有域名（Domain），請先將域名以A紀錄設到本主機 IP ，本安裝程式可自動幫您設定 SSL 並綁定網域")
-		fmt.Println("或依照您所選的設定綁定特定埠（Port）")
-	} else {
-		fmt.Println("\nIf you already have a domain name, please point it to this host's IP address.")
-		fmt.Println("This installer can automatically set up SSL and bind the domain for you,")
-		fmt.Println("or bind to a specific port according to your chosen settings.")
-	}
-	domain, email, useSSL, port := askDomainAndSSL(lang)
-
-	// Update .env file with domain and port if not using SSL
-	if !useSSL {
-		if domain != "" {
-			updateEnv("DOMAIN", domain)
-			updateEnv("PORT", "") // Clear port if domain is set
-		} else {
-			updateEnv("DOMAIN", "localhost") // Default domain if not set
-			updateEnv("PORT", port)
-		}
-	} else {
-		// For SSL, domain is handled by Caddyfile, clear PORT if it was set by default
-		updateEnv("PORT", "")
-	}
-
-	// Update Caddyfile if SSL is used
-	if useSSL {
-		updateCaddyfile("your-domain.com", domain)
-		updateCaddyfile("your-email@example.com", email)
-	}
-
-	mysqlConf := askMySQL(lang)
-	for key, value := range mysqlConf {
-		updateEnv(key, value)
-	}
-
-	adminUser, adminPass := askAdminCredentials(lang)
-	updateEnv("ADMIN_LOGIN_USER", adminUser)
-	updateEnv("ADMIN_LOGIN_PASSWORD", adminPass)
-	updateEnv("LANGUAGE", lang)
-
-	composeFile := "docker-compose.yaml"
-	if useSSL {
-		composeFile = "docker-compose-ssl.yaml"
-	}
-
-	// 在這裡生成 .env 檔案
-	writeEnvFile()
-
-	if lang == "zh-hant" {
-		fmt.Printf("✅ .env 建立完成，開始 docker compose -f %s up -d ...\n", composeFile)
-	} else {
-		fmt.Println("✅ .env file created successfully.")
-		fmt.Printf("Starting docker compose -f %s up -d ...\n", composeFile)
-	}
-
-	// Only run docker compose if it's available
-	if haveDocker {
-		dockerComposeUp(composeFile)
-	} else {
-		// This part also needs i18n if desired, but not specified in this request
-		fmt.Println("Docker Compose is not available. Please install it and run manually:")
-		fmt.Printf("docker compose -f %s up -d\n", composeFile)
-	}
+	return ""
 }
 
-// ---------------- Utilities ----------------
-func chooseLanguage() string {
-	fmt.Println("1. What's your language?")
-	fmt.Println(" 1) en")
-	fmt.Println(" 2) 台灣繁體中文")
-	for {
-		fmt.Print("Please enter 1 or 2: ")
-		choice := readLine()
-		if choice == "1" {
-			return "en"
-		} else if choice == "2" {
-			return "zh-hant"
-		}
+func backupFile(path string) error {
+	backupPath := path + ".bak"
+	count := 0
+
+	for fileExists(backupPath) {
+		count++
+		backupPath = fmt.Sprintf("%s.bak%d", path, count)
 	}
+
+	if err := os.Rename(path, backupPath); err != nil {
+		return fmt.Errorf("無法備份 %s: %v", path, err)
+	}
+
+	green.Printf("已將 %s 備份為 %s\n", path, backupPath)
+	return nil
 }
 
-func askDomainAndSSL(lang string) (string, string, bool, string) {
-	var domain, email, port string
-	var useSSL bool
-
-	// Ask about SSL first
-	var sslPrompt string
-	if lang == "zh-hant" {
-		sslPrompt = "您是否有網域並希望自動設定 SSL？ [y/N] "
-	} else {
-		sslPrompt = "Do you have a domain and want to set up SSL automatically? [y/N] "
+func backupExisting() error {
+	// 備份 .env
+	if err := backupFile(targetFile); err != nil {
+		return err
 	}
-	fmt.Print(sslPrompt)
-	choice := strings.ToLower(readLine())
-	useSSL = strings.HasPrefix(choice, "y")
 
-	if useSSL {
-		// SSL Path
-		var domainPrompt, emailPrompt string
-		if lang == "zh-hant" {
-			domainPrompt = "請輸入您的域名 (例如 example.com): "
-			emailPrompt = "請輸入您的電子郵件 (用於 Let's Encrypt SSL 證書): "
-		} else {
-			domainPrompt = "Please enter your domain name (e.g., example.com): "
-			emailPrompt = "Please enter your email (for Let's Encrypt SSL certificate): "
+	// 詢問是否備份資料庫
+	if checkMariaDBData() {
+		var backupDB bool
+		prompt := &survey.Confirm{
+			Message: "是否要備份資料庫、網站檔案（data/mariadb_data、data/www 資料夾）？",
+			Default: true,
 		}
-		fmt.Print(domainPrompt)
-		domain = readLine()
-		if domain == "" {
-			// Domain is mandatory for SSL
-			if lang == "zh-hant" {
-				fmt.Println("域名 SSL 模式下不可為空")
-			} else {
-				fmt.Println("Domain cannot be empty for SSL")
+		if err := survey.AskOne(prompt, &backupDB); err != nil {
+			return err
+		}
+
+		if backupDB {
+			if err := backupFile("data/mariadb_data"); err != nil {
+				return err
 			}
-			os.Exit(1)
-		}
-		fmt.Print(emailPrompt)
-		email = readLine()
-		port = "" // Port is not used with SSL directly in .env, Caddy handles it
-	} else {
-		// Non-SSL Path
-		domainPrompt := ""
-		if lang == "zh-hant" {
-			domainPrompt = "網站網址 (domain，可留空): "
-		} else {
-			domainPrompt = "Domain (leave blank for no domain): "
-		}
-		fmt.Print(domainPrompt)
-		domain = readLine()
 
-		if domain == "" {
-			portPrompt := ""
-			if lang == "zh-hant" {
-				portPrompt = "請輸入 Port (預設 8080): "
-			} else {
-				portPrompt = "Please enter Port (default 8080): "
+			// 同時備份 data/www
+			if fileExists("data/www") {
+				if err := backupFile("data/www"); err != nil {
+					yellow.Printf("警告: 無法備份 data/www: %v\n", err)
+				}
 			}
-			fmt.Print(portPrompt)
-			port = readLine()
-			if port == "" {
-				port = "8080"
-			}
-		} else {
-			port = "" // If domain is set, port is usually handled by reverse proxy or not needed in .env
 		}
-		email = ""
 	}
-	return domain, email, useSSL, port
+
+	return nil
 }
 
-func askMySQLPassword(lang string, passwordName string) string {
-	var passPrompt, confirmPrompt, mismatchMsg, reEnterPrompt string
-	if lang == "zh-hant" {
-		passPrompt = passwordName + " (留空自動產生): "
-		confirmPrompt = "請再次輸入" + passwordName + "密碼確認: "
-		mismatchMsg = "   ✗ 兩次密碼不一致，請重新輸入。"
-		reEnterPrompt = "重新輸入" + passwordName + ": "
+func startDocker() error {
+	hasCaddyfile := fileExists(caddyfile)
+
+	var composeFile string
+	if hasCaddyfile {
+		cyan.Println("使用 SSL 配置啟動...")
+		composeFile = sslComposeFile
 	} else {
-		passPrompt = passwordName + " (leave blank for random password): "
-		confirmPrompt = "Please re-enter " + passwordName + " to confirm: "
-		mismatchMsg = "   ✗ Passwords do not match. Please re-enter."
-		reEnterPrompt = "Re-enter " + passwordName + ": "
+		cyan.Println("使用非 SSL 配置啟動...")
+		composeFile = defaultComposeFile
 	}
 
-	pass := readPassword(passPrompt)
-	if pass == "" {
-		return randomPass(13) // Auto-generate if blank, do not print
-	}
-	for {
-		confirm := readPassword(confirmPrompt)
-		if pass == confirm {
-			return pass
-		}
-		fmt.Println(mismatchMsg)
-		pass = readPassword(reEnterPrompt)
-	}
+	return dockerComposeUp(composeFile)
 }
 
-func askMySQL(lang string) map[string]string {
-	conf := map[string]string{}
-
-	if lang == "zh-hant" {
-		fmt.Print("是否要修改 MySQL 參數？(y/N) ")
-	} else {
-		fmt.Print("Modify MySQL parameters? (y/N) ")
-	}
-	choice := strings.ToLower(readLine())
-
-	if !strings.HasPrefix(choice, "y") { // User chose N or pressed Enter
-		// 自動產生密碼，但保留預設的其他字段
-		conf["MYSQL_ROOT_PASSWORD"] = randomPass(13)
-		conf["MYSQL_DATABASE"] = "" // Mark to retain the example value
-		conf["MYSQL_USER"] = ""     // Mark to retain the example value
-		conf["MYSQL_PASSWORD"] = randomPass(13)
-	} else { // User chose Y
-		// ROOT 密碼
-		conf["MYSQL_ROOT_PASSWORD"] = askMySQLPassword(lang, "MYSQL_ROOT_PASSWORD")
-
-		// 資料庫名稱
-		if lang == "zh-hant" {
-			fmt.Print("MYSQL_DATABASE (留空使用預設值): ")
-		} else {
-			fmt.Print("MYSQL_DATABASE (leave blank for default): ")
-		}
-		if v := readLine(); v != "" {
-			conf["MYSQL_DATABASE"] = v
-		}
-
-		// 用戶名稱
-		if lang == "zh-hant" {
-			fmt.Print("MYSQL_USER (留空使用預設值): ")
-		} else {
-			fmt.Print("MYSQL_USER (leave blank for default): ")
-		}
-		if v := readLine(); v != "" {
-			conf["MYSQL_USER"] = v
-		}
-
-		// 用戶密碼
-		conf["MYSQL_PASSWORD"] = askMySQLPassword(lang, "MYSQL_PASSWORD")
+func checkDocker() error {
+	if _, err := exec.LookPath("docker"); err != nil {
+		return fmt.Errorf("Docker 未安裝")
 	}
 
-	return conf // Now always returns a map
+	if err := exec.Command("docker", "compose", "version").Run(); err != nil {
+		return fmt.Errorf("Docker Compose 插件未安裝或未啟用")
+	}
+
+	return nil
 }
 
-func askAdminCredentials(lang string) (string, string) {
-	user := askUsername(lang)
-	pass := askPassword(lang)
-	return user, pass
-}
-
-func askUsername(lang string) string {
-	var prompt string
-	if lang == "zh-hant" {
-		prompt = "ADMIN_LOGIN_USER (留空自動產生): "
-	} else {
-		prompt = "ADMIN_LOGIN_USER (leave blank for example value): "
-	}
-	fmt.Print(prompt)
-	user := readLine()
-	if user == "" {
-		return "example" // Default to 'example' if blank
-	}
-	return user
-}
-
-func askPassword(lang string) string {
-	var passPrompt, confirmPrompt, mismatchMsg, reEnterPrompt string
-	if lang == "zh-hant" {
-		passPrompt = "ADMIN_LOGIN_PASSWORD (留空自動產生): "
-		confirmPrompt = "請再次輸入密碼確認: "
-		mismatchMsg = "   ✗ 兩次不一致，請重新輸入。"
-		reEnterPrompt = "重新輸入密碼: "
-	} else {
-		passPrompt = "ADMIN_LOGIN_PASSWORD (leave blank and the installer will provide a random password): "
-		confirmPrompt = "Please re-enter password to confirm: "
-		mismatchMsg = "   ✗ Passwords do not match. Please re-enter."
-		reEnterPrompt = "Re-enter password: "
-	}
-
-	pass := readPassword(passPrompt)
-	if pass == "" {
-		return randomPass(11) // Auto-generate if blank, do not print
-	}
-	for {
-		confirm := readPassword(confirmPrompt)
-		if pass == confirm {
-			return pass
-		}
-		fmt.Println(mismatchMsg)
-		pass = readPassword(reEnterPrompt) // Use the translated re-enter prompt
-	}
-}
-
-// --------- File and String Processing ---------
-func dockerComposeUp(composeFile string) {
+func dockerComposeUp(composeFile string) error {
 	cmd := exec.Command("docker", "compose", "-f", composeFile, "up", "-d")
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
+
 	if err := cmd.Run(); err != nil {
-		fmt.Printf("Error starting docker compose: %v\n", err)
-		// Decide if to os.Exit(1) or let the user know and continue
-	}
-}
-
-// 不再使用 copyFile 函數
-
-func updateEnv(key, val string) {
-	// 如果值為空，則不更新環境變數
-	if val == "" {
-		return
+		return fmt.Errorf("執行 docker compose up 失敗: %w", err)
 	}
 
-	// 將鍵值對存入映射
-	envVars[key] = val
+	green.Println("網站已成功啟動！")
+	return nil
 }
 
-// 載入預設環境變數
-func loadDefaultEnvs() {
+func loadDefaultEnvs(cfg *Config) error {
 	data, err := os.ReadFile(exampleFile)
 	if err != nil {
-		fmt.Printf("Error reading example file %s: %v\n", exampleFile, err)
-		return
+		return fmt.Errorf("讀取 %s 失敗: %w", exampleFile, err)
 	}
 
-	// 分割檔案內容為行
 	lines := strings.Split(string(data), "\n")
-
-	// 解析每一行，提取環境變數
 	for _, line := range lines {
-		// 忽略註解行和空行
-		if strings.HasPrefix(strings.TrimSpace(line), "#") || strings.TrimSpace(line) == "" {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "#") || trimmed == "" {
 			continue
 		}
 
-		// 分割 key=value
-		parts := strings.SplitN(strings.TrimSpace(line), "=", 2)
+		parts := strings.SplitN(trimmed, "=", 2)
 		if len(parts) == 2 {
 			key := strings.TrimSpace(parts[0])
 			val := strings.TrimSpace(parts[1])
-			// 預設值加入到環境變數映射
-			envVars[key] = val
+			cfg.envVars[key] = val
 		}
 	}
+
+	return nil
 }
 
-// 將收集到的環境變數寫入 .env 檔案
-func writeEnvFile() {
-	// 讀取 example.env 以保留註釋和結構
-	data, err := os.ReadFile(exampleFile)
-	if err != nil {
-		fmt.Printf("Error reading example file %s: %v\n", exampleFile, err)
-
-		// 如果無法讀取範例檔，則直接寫入環境變數
-		var content strings.Builder
-		for key, val := range envVars {
-			fmt.Fprintf(&content, "%s=%s\n", key, val)
-		}
-
-		// 寫入檔案
-		err = os.WriteFile(targetFile, []byte(content.String()), 0644)
-		if err != nil {
-			fmt.Printf("Error writing file %s: %v\n", targetFile, err)
-		}
-		return
+func askLanguage(cfg *Config) error {
+	prompt := &survey.Select{
+		Message: "What's your language? / 請選擇語言（上下鍵選取，或按下數字鍵後 enter）：",
+		Options: []string{"1. English", "2. Taiwan Traditional Chinese 台灣繁體中文"},
 	}
 
-	// 分割檔案內容為行
-	lines := strings.Split(string(data), "\n")
-	var newContent strings.Builder
+	var choice string
+	if err := survey.AskOne(prompt, &choice); err != nil {
+		return err
+	}
 
-	// 處理每一行
-	for _, line := range lines {
-		trimmedLine := strings.TrimSpace(line)
+	if choice == "1. English" {
+		cfg.Language = "en"
+	} else {
+		cfg.Language = "zh-hant"
+	}
 
-		// 保留註解行和空行
-		if strings.HasPrefix(trimmedLine, "#") || trimmedLine == "" {
-			fmt.Fprintln(&newContent, line)
-			continue
+	return nil
+}
+
+func askDomainAndSSL(cfg *Config) error {
+	// SSL 詢問
+	sslPrompt := "Do you have a domain and want to set up SSL automatically?"
+	if cfg.Language == "zh-hant" {
+		sslPrompt = "您是否有網域並希望自動設定 SSL？"
+	}
+
+	var useSSL bool
+	prompt := &survey.Confirm{
+		Message: sslPrompt,
+		Default: false,
+	}
+	if err := survey.AskOne(prompt, &useSSL); err != nil {
+		return err
+	}
+	cfg.UseSSL = useSSL
+
+	if useSSL {
+		// SSL 路徑
+		domainPrompt := "Please enter your domain name (e.g., example.com):"
+		emailPrompt := "Please enter your email (for Let's Encrypt SSL certificate):"
+		if cfg.Language == "zh-hant" {
+			domainPrompt = "請輸入您的域名 (例如 example.com)："
+			emailPrompt = "請輸入您的電子郵件 (用於 Let's Encrypt SSL 證書)："
 		}
 
-		// 處理環境變數行
-		parts := strings.SplitN(trimmedLine, "=", 2)
-		if len(parts) == 2 {
-			key := strings.TrimSpace(parts[0])
+		// 域名
+		domainInput := &survey.Input{
+			Message: domainPrompt,
+		}
+		if err := survey.AskOne(domainInput, &cfg.Domain, survey.WithValidator(survey.Required)); err != nil {
+			return err
+		}
 
-			// 如果我們有用戶提供的值，使用它
-			if val, ok := envVars[key]; ok {
-				fmt.Fprintf(&newContent, "%s=%s\n", key, val)
-				// 從映射中刪除，這樣我們可以跟踪哪些變數尚未寫入
-				delete(envVars, key)
-			} else {
-				// 保留原始行
-				fmt.Fprintln(&newContent, line)
+		// Email
+		emailInput := &survey.Input{
+			Message: emailPrompt,
+		}
+		if err := survey.AskOne(emailInput, &cfg.Email); err != nil {
+			return err
+		}
+	} else {
+		// 非 SSL 路徑
+		domainPrompt := "Domain (leave blank for no domain):"
+		if cfg.Language == "zh-hant" {
+			domainPrompt = "網站網址 (domain，可留空)："
+		}
+
+		domainInput := &survey.Input{
+			Message: domainPrompt,
+		}
+		if err := survey.AskOne(domainInput, &cfg.Domain); err != nil {
+			return err
+		}
+
+		if cfg.Domain == "" {
+			portPrompt := "Please enter Port (default 8080):"
+			if cfg.Language == "zh-hant" {
+				portPrompt = "請輸入 Port (預設 8080)："
 			}
-		} else {
-			// 不是環境變數格式，保留原始行
-			fmt.Fprintln(&newContent, line)
+
+			portInput := &survey.Input{
+				Message: portPrompt,
+				Default: "8080",
+			}
+			if err := survey.AskOne(portInput, &cfg.Port); err != nil {
+				return err
+			}
 		}
 	}
 
-	// 添加任何剩餘的環境變數
-	for key, val := range envVars {
-		fmt.Fprintf(&newContent, "%s=%s\n", key, val)
+	return nil
+}
+
+func askMySQL(cfg *Config) error {
+	modifyPrompt := "Modify MySQL parameters?"
+	if cfg.Language == "zh-hant" {
+		modifyPrompt = "是否要修改 MySQL 參數？"
 	}
 
-	// 寫入檔案
-	err = os.WriteFile(targetFile, []byte(newContent.String()), 0644)
-	if err != nil {
-		fmt.Printf("Error writing file %s: %v\n", targetFile, err)
+	var modify bool
+	prompt := &survey.Confirm{
+		Message: modifyPrompt,
+		Default: false,
+	}
+	if err := survey.AskOne(prompt, &modify); err != nil {
+		return err
+	}
+
+	if !modify {
+		// 自動產生密碼
+		cfg.MySQLRootPassword = randomPass(13)
+		cfg.MySQLPassword = randomPass(13)
+		// Database 和 User 保留預設值
+		return nil
+	}
+
+	// ROOT 密碼
+	if err := askPasswordWithConfirm(cfg, "MYSQL_ROOT_PASSWORD", &cfg.MySQLRootPassword, 13); err != nil {
+		return err
+	}
+
+	// Database
+	dbPrompt := "MYSQL_DATABASE (leave blank for default):"
+	if cfg.Language == "zh-hant" {
+		dbPrompt = "MYSQL_DATABASE (留空使用預設值)："
+	}
+	dbInput := &survey.Input{
+		Message: dbPrompt,
+	}
+	if err := survey.AskOne(dbInput, &cfg.MySQLDatabase); err != nil {
+		return err
+	}
+
+	// User
+	userPrompt := "MYSQL_USER (leave blank for default):"
+	if cfg.Language == "zh-hant" {
+		userPrompt = "MYSQL_USER (留空使用預設值)："
+	}
+	userInput := &survey.Input{
+		Message: userPrompt,
+	}
+	if err := survey.AskOne(userInput, &cfg.MySQLUser); err != nil {
+		return err
+	}
+
+	// User 密碼
+	if err := askPasswordWithConfirm(cfg, "MYSQL_PASSWORD", &cfg.MySQLPassword, 13); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func askAdminCredentials(cfg *Config) error {
+	// Username
+	userPrompt := "ADMIN_LOGIN_USER (leave blank for 'admin'):"
+	if cfg.Language == "zh-hant" {
+		userPrompt = "ADMIN_LOGIN_USER (留空使用 'admin')："
+	}
+
+	userInput := &survey.Input{
+		Message: userPrompt,
+		Default: "admin",
+	}
+	if err := survey.AskOne(userInput, &cfg.AdminLoginUser); err != nil {
+		return err
+	}
+
+	// Password
+	if err := askPasswordWithConfirm(cfg, "ADMIN_LOGIN_PASSWORD", &cfg.AdminLoginPassword, 11); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func askPasswordWithConfirm(cfg *Config, field string, target *string, defaultLen int) error {
+	passPrompt := fmt.Sprintf("%s (leave blank for random password):", field)
+	confirmPrompt := fmt.Sprintf("Please re-enter %s to confirm:", field)
+	mismatchMsg := "✗ Passwords do not match. Please re-enter."
+
+	if cfg.Language == "zh-hant" {
+		passPrompt = fmt.Sprintf("%s (留空自動產生)：", field)
+		confirmPrompt = fmt.Sprintf("請再次輸入%s密碼確認：", field)
+		mismatchMsg = "✗ 兩次密碼不一致，請重新輸入。"
+	}
+
+	for {
+		var password string
+		passwordInput := &survey.Password{
+			Message: passPrompt,
+		}
+		if err := survey.AskOne(passwordInput, &password); err != nil {
+			return err
+		}
+
+		if password == "" {
+			*target = randomPass(defaultLen)
+			return nil
+		}
+
+		var confirm string
+		confirmInput := &survey.Password{
+			Message: confirmPrompt,
+		}
+		if err := survey.AskOne(confirmInput, &confirm); err != nil {
+			return err
+		}
+
+		if password == confirm {
+			*target = password
+			return nil
+		}
+
+		red.Println(mismatchMsg)
 	}
 }
 
 func randomPass(length int) string {
-	buf := make([]byte, length)
-	_, _ = rand.Read(buf)
-	return base64.RawURLEncoding.EncodeToString(buf)[:length]
+	// 定義字符集
+	const (
+		lowercase = "abcdefghijklmnopqrstuvwxyz"
+		uppercase = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+		digits    = "0123456789"
+		symbols   = "!@#$%^&*"
+	)
+	allChars := lowercase + uppercase + digits + symbols
+
+	// 確保密碼包含各種字符
+	var password strings.Builder
+
+	// 至少包含一個小寫字母
+	password.WriteByte(lowercase[randInt(len(lowercase))])
+	// 至少包含一個大寫字母
+	password.WriteByte(uppercase[randInt(len(uppercase))])
+	// 至少包含一個數字
+	password.WriteByte(digits[randInt(len(digits))])
+	// 至少包含一個符號
+	password.WriteByte(symbols[randInt(len(symbols))])
+
+	// 填充剩餘長度
+	for i := 4; i < length; i++ {
+		password.WriteByte(allChars[randInt(len(allChars))])
+	}
+
+	// 打亂密碼順序
+	runes := []rune(password.String())
+	for i := len(runes) - 1; i > 0; i-- {
+		j := randInt(i + 1)
+		runes[i], runes[j] = runes[j], runes[i]
+	}
+
+	return string(runes)
 }
 
-// --------- Environment and File Handling Utilities ---------
-func checkDockerCompose() bool {
-	cmd := exec.Command("docker", "compose", "version")
-	err := cmd.Run()
-	return err == nil
+func randInt(max int) int {
+	n, _ := rand.Int(rand.Reader, big.NewInt(int64(max)))
+	return int(n.Int64())
 }
 
-func updateCaddyfile(oldValue, newValue string) {
-	filePath := "data/Caddyfile"
-
-	// Read file
-	data, err := os.ReadFile(filePath)
+func writeEnvFile(cfg *Config) error {
+	data, err := os.ReadFile(exampleFile)
 	if err != nil {
-		fmt.Printf("Error reading %s: %v\n", filePath, err)
-		return
+		// 如果無法讀取範例檔，直接寫入
+		var lines []string
+		for key, val := range cfg.envVars {
+			lines = append(lines, fmt.Sprintf("%s=%s", key, val))
+		}
+		content := strings.Join(lines, "\n") + "\n"
+		return os.WriteFile(targetFile, []byte(content), 0644)
 	}
 
-	// Replace content
-	newContent := strings.ReplaceAll(string(data), oldValue, newValue)
+	// 基於範例檔案更新
+	lines := strings.Split(string(data), "\n")
+	var newContent strings.Builder
+	written := make(map[string]bool)
 
-	// Write back to file
-	err = os.WriteFile(filePath, []byte(newContent), 0644)
-	if err != nil {
-		fmt.Printf("Error writing %s: %v\n", filePath, err)
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+
+		// 保留註解和空行
+		if strings.HasPrefix(trimmed, "#") || trimmed == "" {
+			fmt.Fprintln(&newContent, line)
+			continue
+		}
+
+		// 處理環境變數
+		parts := strings.SplitN(trimmed, "=", 2)
+		if len(parts) == 2 {
+			key := strings.TrimSpace(parts[0])
+
+			if val, ok := cfg.envVars[key]; ok && val != "" {
+				fmt.Fprintf(&newContent, "%s=%s\n", key, val)
+				written[key] = true
+			} else {
+				fmt.Fprintln(&newContent, line)
+			}
+		} else {
+			fmt.Fprintln(&newContent, line)
+		}
 	}
+
+	// 添加未寫入的變數
+	for key, val := range cfg.envVars {
+		if !written[key] && val != "" {
+			fmt.Fprintf(&newContent, "%s=%s\n", key, val)
+		}
+	}
+
+	return os.WriteFile(targetFile, []byte(newContent.String()), 0644)
 }
 
-// --------- Interactive Input ---------
-func readLine() string {
-	text, _ := reader.ReadString('\n')
-	return strings.TrimSpace(text)
-}
+func updateCaddyfile(cfg *Config) error {
+	// 檢查 example.Caddyfile 是否存在
+	if !fileExists(exampleCaddyfile) {
+		return fmt.Errorf("%s 不存在", exampleCaddyfile)
+	}
 
-func readPassword(prompt string) string {
-	fmt.Print(prompt)
+	// 如果 Caddyfile 已存在，先備份
+	if fileExists(caddyfile) {
+		if err := backupFile(caddyfile); err != nil {
+			return err
+		}
+	}
 
-	// 嘗試使用 stty 來隱藏密碼輸入，這在 Linux/Mac 環境下比較可靠
-	cmd := exec.Command("bash", "-c", "stty -echo; cat; stty echo")
-	cmd.Stdin = os.Stdin
-	cmd.Stderr = os.Stderr
-
-	stdin, err := cmd.StdinPipe()
+	// 讀取範例檔案
+	data, err := os.ReadFile(exampleCaddyfile)
 	if err != nil {
-		fmt.Printf("\n無法建立安全的密碼輸入: %v\n", err)
-		return readLine()
+		return err
 	}
 
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		fmt.Printf("\n無法建立安全的密碼輸入: %v\n", err)
-		return readLine()
+	// 替換內容
+	content := string(data)
+	content = strings.ReplaceAll(content, "your.domain.name", cfg.Domain)
+	if cfg.Email != "" {
+		content = strings.ReplaceAll(content, "your-email@domain.com", cfg.Email)
 	}
 
-	if err := cmd.Start(); err != nil {
-		fmt.Printf("\n無法建立安全的密碼輸入: %v\n", err)
-		return readLine()
+	// 確保 data 目錄存在
+	if err := os.MkdirAll("data", 0755); err != nil {
+		return fmt.Errorf("無法建立 data 目錄: %w", err)
 	}
 
-	password, err := bufio.NewReader(stdout).ReadString('\n')
-	fmt.Println() // 添加換行，因為 stty -echo 不會自動換行
-
-	// 關閉 stdin 來結束命令
-	stdin.Close()
-
-	err = cmd.Wait()
-	if err != nil {
-		// 如果密碼輸入失敗，則將密碼輸入設置為可見並重試
-		fmt.Printf("\n無法安全地讀取密碼: %v\n請純簡輸入: ", err)
-		return readLine()
+	// 寫入檔案
+	if err := os.WriteFile(caddyfile, []byte(content), 0644); err != nil {
+		return err
 	}
 
-	// 移除尾端的換行符
-	password = strings.TrimSpace(password)
-	return password
+	green.Printf("✅ Caddyfile 已更新\n")
+	return nil
 }

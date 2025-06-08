@@ -1,0 +1,6 @@
+{
+    email your-email@domain.com
+}
+your.domain.name {
+    reverse_proxy neticrm-nginx:80
+}
