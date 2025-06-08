@@ -800,7 +800,7 @@ func writeEnvFile(cfg *Config) error {
 		// 如果無法讀取範例檔，直接寫入
 		var lines []string
 		for key, val := range cfg.envVars {
-			lines = append(lines, fmt.Sprintf("%s=%s", key, val))
+			lines = append(lines, fmt.Sprintf("%s=\"%s\"", key, val))
 		}
 		content := strings.Join(lines, "\n") + "\n"
 		return os.WriteFile(targetFile, []byte(content), 0644)
@@ -826,7 +826,7 @@ func writeEnvFile(cfg *Config) error {
 			key := strings.TrimSpace(parts[0])
 
 			if val, ok := cfg.envVars[key]; ok && val != "" {
-				fmt.Fprintf(&newContent, "%s=%s\n", key, val)
+				fmt.Fprintf(&newContent, "%s=\"%s\"\n", key, val)
 				written[key] = true
 			} else {
 				fmt.Fprintln(&newContent, line)
@@ -839,7 +839,7 @@ func writeEnvFile(cfg *Config) error {
 	// 添加未寫入的變數
 	for key, val := range cfg.envVars {
 		if !written[key] && val != "" {
-			fmt.Fprintf(&newContent, "%s=%s\n", key, val)
+			fmt.Fprintf(&newContent, "%s=\"%s\"\n", key, val)
 		}
 	}
 
