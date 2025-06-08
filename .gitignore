@@ -3,12 +3,15 @@
 
 # Ignore MariaDB data directory
 data/mariadb_data/
+data/mariadb_data.bak*
 
 # Ignore www directory
 data/www/
+data/www.bak*
 data/sites/
 
 # Ignore Caddy data directory
 data/caddy_data/
 data/caddy_config/
 data/Caddyfile
+data/Caddyfile.bak*
