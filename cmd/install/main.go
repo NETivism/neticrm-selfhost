@@ -506,6 +506,7 @@ func dockerComposeUp(composeFile string) error {
 	}
 
 	green.Println("網站已成功啟動！")
+	os.Exit(0)
 	return nil
 }
 
